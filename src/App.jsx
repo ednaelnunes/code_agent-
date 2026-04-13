@@ -1,72 +1,54 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 
-const SYSTEM_PROMPT = `Você é um parceiro de desenvolvimento e braço direito do usuário. Sua personalidade é próxima, direta e inteligente — como um amigo desenvolvedor sênior que está sempre disponível para ajudar.
+const SYSTEM_PROMPT = `Você é um parceiro de desenvolvimento e braço direito do usuário. Sua personalidade é próxima, direta e inteligente — como um amigo desenvolvedor sênior sempre disponível.
 
 ## 🧠 QUEM VOCÊ É
-
-Você é um assistente completo, não apenas um gerador de código. Você conversa, explica, sugere, questiona, opina e desenvolve junto com o usuário. Pense em si mesmo como o sócio técnico ideal: experiente, acessível e sempre disposto a ajudar — seja numa tarefa simples ou num projeto complexo.
+Você é um assistente completo, não apenas um gerador de código. Você conversa, explica, sugere, questiona, opina e desenvolve junto com o usuário.
 
 Você tem acesso a:
-- 🔍 Busca na web — para informações atualizadas, documentações e erros conhecidos
+- 🔍 Busca na web — informações atualizadas, documentações, erros conhecidos
 - 📎 Leitura de arquivos — PDF, imagens, código-fonte
 - 🔗 Leitura de sites por URL — para analisar referências visuais e técnicas
 
 ## 💬 COMO VOCÊ SE COMUNICA
-
 - Seja natural e conversacional — não robótico ou formal demais
-- Responda perguntas simples de forma simples. Não force estrutura onde não é necessária
-- Use estrutura (títulos, blocos de código, listas) apenas quando o conteúdo pedir
-- Se o usuário mandar uma mensagem curta, responda de forma proporcional
+- Responda perguntas simples de forma simples, sem forçar estrutura
+- Use títulos, listas e blocos de código apenas quando o conteúdo realmente pedir
+- Se a mensagem for curta, responda de forma proporcional — sem enrolação
 - Opine quando perguntado. Você tem experiência e pode recomendar caminhos
-- Pergunte quando estiver em dúvida sobre o que o usuário quer — mas não faça perguntas demais
+- Pergunte quando estiver em dúvida, mas não faça perguntas demais de uma vez
 - Pode usar humor leve quando apropriado
 
 ## 💻 QUANDO GERAR CÓDIGO
-
 - Gere código limpo, comentado e seguindo boas práticas (SOLID, DRY, KISS)
-- Prefira soluções simples antes de soluções complexas
+- Prefira soluções simples antes de complexas
 - Sempre inclua tratamento de erros
 - Nunca exponha credenciais hardcoded — use variáveis de ambiente
-- Nunca gere código com vulnerabilidades conhecidas (SQL Injection, XSS, etc.)
-- Informe sempre a linguagem/framework do código gerado
+- Nunca gere código com vulnerabilidades conhecidas
 - Se o usuário não informar a linguagem, pergunte antes de gerar
 
 ## 🔗 QUANDO ANALISAR UM SITE (URL)
-
-- Leia o HTML/CSS com atenção
-- Identifique: paleta de cores, tipografia, layout, componentes, estilo visual geral
+- Identifique: paleta de cores, tipografia, layout, componentes e estilo visual
 - Use como referência para criar ou adaptar o projeto do usuário
-- Aponte melhorias ou adaptações relevantes
-
-## 📄 QUANDO ANALISAR ARQUIVOS
-
-- Leia o conteúdo com atenção antes de responder
-- Identifique linguagem, padrões e estrutura
-- Sugira melhorias ou corrija problemas encontrados
 
 ## 🔧 QUANDO RESOLVER PROBLEMAS
-
 - Identifique a causa raiz, não apenas o sintoma
-- Explique o problema em linguagem simples
-- Apresente a solução de forma clara
+- Explique de forma simples e apresente a solução clara
 - Se houver mais de uma solução, mostre as opções com prós e contras
 
 ## 🔐 LIMITES INEGOCIÁVEIS
-
 - NUNCA gere código malicioso, destrutivo ou antiético
-- NUNCA produza conteúdo prejudicial, mesmo se solicitado
+- NUNCA produza conteúdo prejudicial
 - SEMPRE proteja a segurança e privacidade do usuário
 
 ## 🌍 IDIOMA
-
 Responda sempre em Português do Brasil, com linguagem natural e acessível.
-Adapte o nível técnico conforme o contexto — mais simples quando o usuário está aprendendo, mais técnico quando ele demonstra experiência.`;
+Adapte o nível técnico ao contexto do usuário.`;
 
 // ─── Storage ───────────────────────────────────────────────────────
-const CHATS_KEY  = "codeagent:chats-index";
-const chatKey    = (id) => `codeagent:chat:${id}`;
-const KEY_STORE  = "codeagent:apikey";
-
+const CHATS_KEY = "codeagent:chats-index";
+const chatKey   = (id) => `codeagent:chat:${id}`;
+const KEY_STORE = "codeagent:apikey";
 const ls = {
   get: (k) => { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
   set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
@@ -74,9 +56,9 @@ const ls = {
 };
 
 // ─── Utils ─────────────────────────────────────────────────────────
-const genId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+const genId      = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 const shortTitle = (t) => t.length > 38 ? t.slice(0, 38) + "…" : t;
-const fmtDate = (ts) => new Date(ts).toLocaleDateString("pt-BR", { day: "2-digit", month: "short" });
+const fmtDate    = (ts) => new Date(ts).toLocaleDateString("pt-BR", { day: "2-digit", month: "short" });
 
 // ─── File helpers ──────────────────────────────────────────────────
 const SUPPORTED = {
@@ -90,53 +72,33 @@ const toText   = (f) => new Promise((res, rej) => { const r = new FileReader(); 
 const fileIcon = (k) => k === "pdf" ? "📄" : k === "image" ? "🖼️" : k === "url" ? "🔗" : "📝";
 const fmtBytes = (b) => b < 1024 ? b + " B" : b < 1048576 ? (b/1024).toFixed(1) + " KB" : (b/1048576).toFixed(1) + " MB";
 
-// ─── URL Fetcher via CORS proxy ────────────────────────────────────
+// ─── URL Fetcher ───────────────────────────────────────────────────
 async function fetchSiteContent(url) {
-  // Try allorigins first, fallback to corsproxy
   const proxies = [
     `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
     `https://corsproxy.io/?${encodeURIComponent(url)}`,
   ];
-
   for (const proxyUrl of proxies) {
     try {
       const res = await fetch(proxyUrl, { signal: AbortSignal.timeout(12000) });
       if (!res.ok) continue;
-
-      let html = "";
-      if (proxyUrl.includes("allorigins")) {
-        const json = await res.json();
-        html = json.contents || "";
-      } else {
-        html = await res.text();
-      }
-
+      let html = proxyUrl.includes("allorigins") ? (await res.json()).contents || "" : await res.text();
       if (!html) continue;
-
-      // Extract useful parts: strip scripts, keep structure + styles
-      const cleaned = html
-        .replace(/<script[\s\S]*?<\/script>/gi, "")
-        .replace(/<noscript[\s\S]*?<\/noscript>/gi, "")
-        .replace(/<!--[\s\S]*?-->/g, "")
-        .replace(/\s{3,}/g, " ")
-        .trim();
-
-      // Limit to 12000 chars to avoid token overflow
-      const truncated = cleaned.length > 12000
-        ? cleaned.slice(0, 12000) + "\n\n[... conteúdo truncado para caber no contexto ...]"
-        : cleaned;
-
-      return { ok: true, content: truncated, url };
+      const cleaned = html.replace(/<script[\s\S]*?<\/script>/gi,"").replace(/<noscript[\s\S]*?<\/noscript>/gi,"").replace(/<!--[\s\S]*?-->/g,"").replace(/\s{3,}/g," ").trim();
+      return { ok: true, content: cleaned.length > 12000 ? cleaned.slice(0, 12000) + "\n[truncado]" : cleaned, url };
     } catch { continue; }
   }
-  throw new Error("Não foi possível acessar o site. Verifique se a URL está correta e o site é público.");
+  throw new Error("Não foi possível acessar o site.");
 }
 
-// ─── Markdown parser ───────────────────────────────────────────────
+// ─── Markdown com botão copiar ─────────────────────────────────────
 function md(text) {
   return text
-    .replace(/```(\w+)?\n([\s\S]*?)```/g, (_, lang, code) =>
-      `<pre class="cb"><div class="cl">${lang||"code"}</div><code>${code.replace(/</g,"&lt;").replace(/>/g,"&gt;")}</code></pre>`)
+    .replace(/```(\w+)?\n([\s\S]*?)```/g, (_, lang, code) => {
+      const escaped = code.replace(/</g,"&lt;").replace(/>/g,"&gt;");
+      const encoded = encodeURIComponent(code);
+      return `<pre class="cb"><div class="cl"><span>${lang||"código"}</span><button class="copy-btn" data-code="${encoded}" onclick="(function(btn){var c=decodeURIComponent(btn.getAttribute('data-code'));navigator.clipboard.writeText(c).then(function(){btn.textContent='✓ Copiado!';btn.style.color='#4caf78';setTimeout(function(){btn.textContent='Copiar';btn.style.color='';},2000)});})(this)">Copiar</button></div><code>${escaped}</code></pre>`;
+    })
     .replace(/`([^`]+)`/g, '<code class="ic">$1</code>')
     .replace(/^### (.+)$/gm, '<h3 class="h3">$1</h3>')
     .replace(/^## (.+)$/gm,  '<h2 class="h2">$1</h2>')
@@ -145,30 +107,102 @@ function md(text) {
     .replace(/\n/g, '<br/>');
 }
 
-// ─── Agentic loop ──────────────────────────────────────────────────
-async function runAgent(apiKey, messages, useWebSearch) {
+// ─── Streaming agent ───────────────────────────────────────────────
+// Fase 1 (se tiver tool_use): chamada normal para resolver tools
+// Fase 2: streaming da resposta final
+async function runAgentStream(apiKey, messages, useWebSearch, onChunk, onSearching) {
   let cur = [...messages];
-  for (let i = 0; i < 6; i++) {
-    const body = { model: "claude-sonnet-4-20250514", max_tokens: 4096, system: SYSTEM_PROMPT, messages: cur };
+
+  // Se web search ativo, primeiro resolve tools com chamada normal
+  for (let i = 0; i < 5; i++) {
+    const needsStream = i === 0 || true; // sempre tenta stream
+    const body = {
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 4096,
+      system: SYSTEM_PROMPT,
+      messages: cur,
+    };
     if (useWebSearch) body.tools = [{ type: "web_search_20250305", name: "web_search" }];
 
-    const res  = await fetch("https://api.anthropic.com/v1/messages", {
+    // Tenta streaming
+    const streamBody = { ...body, stream: true };
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
-      body: JSON.stringify(body),
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true",
+      },
+      body: JSON.stringify(streamBody),
     });
-    const data = await res.json();
-    if (data.error) throw new Error(data.error.message);
 
-    if (data.stop_reason === "end_turn")
-      return { text: data.content.filter(b=>b.type==="text").map(b=>b.text).join("\n"), searched: i > 0 };
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error?.message || "Erro na API");
+    }
 
-    if (data.stop_reason === "tool_use") {
-      cur.push({ role: "assistant", content: data.content });
-      cur.push({ role: "user", content: data.content.filter(b=>b.type==="tool_use").map(b=>({ type:"tool_result", tool_use_id:b.id, content:[] })) });
+    const reader  = res.body.getReader();
+    const decoder = new TextDecoder();
+    let fullText       = "";
+    let stopReason     = null;
+    let toolUseBlocks  = [];
+    let curToolUse     = null;
+    let assistantContent = [];
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = decoder.decode(value, { stream: true });
+      for (const line of chunk.split("\n")) {
+        if (!line.startsWith("data: ")) continue;
+        const raw = line.slice(6).trim();
+        if (!raw || raw === "[DONE]") continue;
+        let evt;
+        try { evt = JSON.parse(raw); } catch { continue; }
+
+        if (evt.type === "content_block_start") {
+          if (evt.content_block?.type === "text") {
+            assistantContent.push({ type: "text", text: "" });
+          } else if (evt.content_block?.type === "tool_use") {
+            curToolUse = { id: evt.content_block.id, name: evt.content_block.name, input: "", type: "tool_use" };
+            assistantContent.push(curToolUse);
+          }
+        }
+        if (evt.type === "content_block_delta") {
+          if (evt.delta?.type === "text_delta") {
+            fullText += evt.delta.text;
+            const last = assistantContent.filter(b=>b.type==="text").at(-1);
+            if (last) last.text += evt.delta.text;
+            onChunk(fullText); // live update!
+          }
+          if (evt.delta?.type === "input_json_delta" && curToolUse) {
+            curToolUse.input += evt.delta.partial_json;
+          }
+        }
+        if (evt.type === "content_block_stop") {
+          if (curToolUse) { toolUseBlocks.push({ ...curToolUse }); curToolUse = null; }
+        }
+        if (evt.type === "message_delta") {
+          stopReason = evt.delta?.stop_reason;
+        }
+      }
+    }
+
+    if (stopReason === "end_turn") return fullText;
+
+    if (stopReason === "tool_use" && toolUseBlocks.length > 0) {
+      onSearching(true);
+      cur.push({ role: "assistant", content: assistantContent });
+      cur.push({
+        role: "user",
+        content: toolUseBlocks.map(b => ({ type: "tool_result", tool_use_id: b.id, content: [] }))
+      });
+      onChunk(""); // limpa texto parcial
       continue;
     }
-    return { text: data.content?.filter(b=>b.type==="text").map(b=>b.text).join("\n")||"", searched: false };
+
+    return fullText;
   }
   throw new Error("Limite de iterações atingido.");
 }
@@ -181,7 +215,7 @@ function buildApiContent(text, attachment) {
   else if (attachment.kind === "pdf")
     parts.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: attachment.data } });
   else if (attachment.kind === "url")
-    parts.push({ type: "text", text: `🔗 SITE ANALISADO: ${attachment.url}\n\nCONTEÚDO HTML/CSS DO SITE:\n\`\`\`html\n${attachment.content}\n\`\`\`` });
+    parts.push({ type: "text", text: `🔗 SITE ANALISADO: ${attachment.url}\n\nHTML/CSS:\n\`\`\`html\n${attachment.content}\n\`\`\`` });
   else
     parts.push({ type: "text", text: `📎 Arquivo: ${attachment.name}\n\`\`\`\n${attachment.content}\n\`\`\`` });
   if (text) parts.push({ type: "text", text });
@@ -200,6 +234,7 @@ export default function App() {
   const [activeChatId, setActiveChatId] = useState(null);
   const [messages, setMessages]         = useState([]);
   const [uiMessages, setUiMessages]     = useState([]);
+  const [streamText, setStreamText]     = useState("");  // texto chegando em tempo real
   const [input, setInput]               = useState("");
   const [urlInput, setUrlInput]         = useState("");
   const [showUrlBox, setShowUrlBox]     = useState(false);
@@ -210,11 +245,14 @@ export default function App() {
   const [error, setError]               = useState("");
   const [sidebarOpen, setSidebarOpen]   = useState(true);
   const [webSearch, setWebSearch]       = useState(true);
-  const bottomRef = useRef(null);
-  const fileRef   = useRef(null);
-  const urlRef    = useRef(null);
+  const bottomRef  = useRef(null);
+  const fileRef    = useRef(null);
+  const urlRef     = useRef(null);
+  const chatIdRef  = useRef(null);
+  const newApiRef  = useRef([]);
+  const newUiRef   = useRef([]);
 
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [uiMessages, loading]);
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [uiMessages, streamText, loading]);
   useEffect(() => { if (showUrlBox) urlRef.current?.focus(); }, [showUrlBox]);
 
   const handleSetKey = () => {
@@ -224,98 +262,96 @@ export default function App() {
     } else setKeyError("Chave inválida. Deve começar com sk-ant-");
   };
 
-  const handleLogout = () => { ls.del(KEY_STORE); setApiKey(""); setApiKeySet(false); setMessages([]); setUiMessages([]); setActiveChatId(null); };
-  const startNewChat = () => { setActiveChatId(null); setMessages([]); setUiMessages([]); setError(""); setInput(""); setAttachment(null); setUrlInput(""); setShowUrlBox(false); };
+  const handleLogout   = () => { ls.del(KEY_STORE); setApiKey(""); setApiKeySet(false); setMessages([]); setUiMessages([]); setActiveChatId(null); };
+  const startNewChat   = () => { setActiveChatId(null); setMessages([]); setUiMessages([]); setError(""); setInput(""); setAttachment(null); setUrlInput(""); setShowUrlBox(false); setStreamText(""); };
+  const openChat       = (id) => { const d = ls.get(chatKey(id)); if (d) { setMessages(d.messages); setUiMessages(d.uiMessages||[]); setActiveChatId(id); setError(""); setAttachment(null); setStreamText(""); } };
+  const removeChat     = (e, id) => { e.stopPropagation(); ls.del(chatKey(id)); const ni=chatsIndex.filter(c=>c.id!==id); setChatsIndex(ni); ls.set(CHATS_KEY,ni); if(activeChatId===id) startNewChat(); };
 
-  const openChat = (id) => {
-    const data = ls.get(chatKey(id));
-    if (data) { setMessages(data.messages); setUiMessages(data.uiMessages||[]); setActiveChatId(id); setError(""); setAttachment(null); }
-  };
-
-  const removeChat = (e, id) => {
-    e.stopPropagation(); ls.del(chatKey(id));
-    const ni = chatsIndex.filter(c=>c.id!==id); setChatsIndex(ni); ls.set(CHATS_KEY, ni);
-    if (activeChatId===id) startNewChat();
-  };
-
-  // ── File pick ──
   const handleFilePick = async (e) => {
-    const file = e.target.files?.[0]; if (!file) return; e.target.value="";
+    const file = e.target.files?.[0]; if (!file) return; e.target.value = "";
     const kind = SUPPORTED[file.type];
     if (!kind) { setError("Tipo não suportado. Use PDF, imagem ou arquivo de texto/código."); return; }
     if (file.size > 4*1024*1024) { setError("Arquivo muito grande. Limite: 4 MB."); return; }
     setError("");
     try {
-      if (kind==="text") { const content = await toText(file); setAttachment({ kind, name:file.name, size:file.size, content }); }
-      else               { const data    = await toBase64(file); setAttachment({ kind, name:file.name, size:file.size, data, mediaType:file.type }); }
-    } catch(err) { setError("Erro ao ler arquivo: "+err.message); }
+      if (kind==="text") { setAttachment({ kind, name:file.name, size:file.size, content: await toText(file) }); }
+      else               { setAttachment({ kind, name:file.name, size:file.size, data: await toBase64(file), mediaType:file.type }); }
+    } catch(err) { setError("Erro: "+err.message); }
   };
 
-  // ── URL fetch ──
   const handleFetchUrl = async () => {
-    let url = urlInput.trim();
-    if (!url) return;
+    let url = urlInput.trim(); if (!url) return;
     if (!url.startsWith("http")) url = "https://" + url;
     setFetchingUrl(true); setError("");
     try {
       const { content } = await fetchSiteContent(url);
       setAttachment({ kind:"url", url, content, name: new URL(url).hostname });
       setShowUrlBox(false); setUrlInput("");
-    } catch(err) { setError("Erro ao carregar URL: " + err.message); }
+    } catch(err) { setError("Erro ao carregar URL: "+err.message); }
     finally { setFetchingUrl(false); }
   };
 
-  // ── Send ──
   const handleSend = async () => {
     if ((!input.trim() && !attachment) || loading) return;
-    const userText   = input.trim() || (attachment?.kind==="url" ? `Analise este site como referência: ${attachment.url}` : `Analise este arquivo: ${attachment?.name}`);
+    const userText   = input.trim() || (attachment?.kind==="url" ? `Analise este site: ${attachment.url}` : `Analise este arquivo: ${attachment?.name}`);
     const userApiMsg = { role:"user", content: buildApiContent(userText, attachment) };
     const userUiMsg  = { role:"user", content:userText, attachment: attachment ? { name:attachment.name||attachment.url, kind:attachment.kind, url:attachment.url } : null };
+
     const newUi  = [...uiMessages, userUiMsg];
     const newApi = [...messages, userApiMsg];
+    newUiRef.current  = newUi;
+    newApiRef.current = newApi;
+
     setUiMessages(newUi); setMessages(newApi);
-    setInput(""); setAttachment(null); setLoading(true); setError(""); setSearching(false);
+    setInput(""); setAttachment(null); setLoading(true); setError(""); setSearching(false); setStreamText("");
 
     let chatId = activeChatId;
     if (!chatId) {
-      chatId = genId(); setActiveChatId(chatId);
+      chatId = genId(); chatIdRef.current = chatId; setActiveChatId(chatId);
       const ni = [{ id:chatId, title:shortTitle(userText), updatedAt:Date.now() }, ...chatsIndex];
       setChatsIndex(ni); ls.set(CHATS_KEY, ni);
-    }
+    } else { chatIdRef.current = chatId; }
 
     try {
-      let t; if (webSearch) t = setTimeout(()=>setSearching(true), 800);
-      const { text, searched } = await runAgent(apiKey, newApi, webSearch);
-      clearTimeout(t); setSearching(false);
-      const finalUi  = [...newUi,  { role:"assistant", content:text, searched }];
-      const finalApi = [...newApi, { role:"assistant", content:text }];
+      const finalText = await runAgentStream(
+        apiKey, newApi, webSearch,
+        (chunk) => setStreamText(chunk),       // atualiza em tempo real
+        (s) => { setSearching(s); if(s) setStreamText(""); }
+      );
+
+      setStreamText("");
+      const finalUi  = [...newUiRef.current,  { role:"assistant", content:finalText }];
+      const finalApi = [...newApiRef.current, { role:"assistant", content:finalText }];
       setUiMessages(finalUi); setMessages(finalApi);
-      ls.set(chatKey(chatId), { messages:finalApi, uiMessages:finalUi });
-      const updated = [...chatsIndex].map(c=>c.id===chatId?{...c,updatedAt:Date.now()}:c).sort((a,b)=>b.updatedAt-a.updatedAt);
-      if (!updated.find(c=>c.id===chatId)) updated.unshift({ id:chatId, title:shortTitle(userText), updatedAt:Date.now() });
+      ls.set(chatKey(chatIdRef.current), { messages:finalApi, uiMessages:finalUi });
+
+      const updated = [...chatsIndex]
+        .map(c=>c.id===chatIdRef.current?{...c,updatedAt:Date.now()}:c)
+        .sort((a,b)=>b.updatedAt-a.updatedAt);
+      if (!updated.find(c=>c.id===chatIdRef.current)) updated.unshift({ id:chatIdRef.current, title:shortTitle(userText), updatedAt:Date.now() });
       setChatsIndex(updated); ls.set(CHATS_KEY, updated);
-    } catch(err) { setSearching(false); setError("Erro: "+err.message); }
-    finally { setLoading(false); }
+    } catch(err) { setStreamText(""); setError("Erro: "+err.message); }
+    finally { setLoading(false); setSearching(false); }
   };
 
-  const onKey = (e) => { if (e.key==="Enter"&&!e.shiftKey) { e.preventDefault(); handleSend(); } };
-  const onUrlKey = (e) => { if (e.key==="Enter") handleFetchUrl(); if (e.key==="Escape") setShowUrlBox(false); };
+  const onKey    = (e) => { if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();handleSend();} };
+  const onUrlKey = (e) => { if(e.key==="Enter") handleFetchUrl(); if(e.key==="Escape") setShowUrlBox(false); };
 
-  // ── Key screen ──
+  // ── API Key Screen ──
   if (!apiKeySet) return (
     <div style={s.root}><style>{css}</style>
       <div style={s.setupWrap}>
         <div style={s.setupCard}>
-          <div style={s.logoBox}>{"</>"}</div>
+          <div style={s.logoBox}>CA</div>
           <h2 style={s.setupTitle}>Code Agent</h2>
-          <p style={s.setupDesc}>Cole sua API Key da Anthropic.<br/><span style={{color:"#555",fontSize:11}}>Salva apenas no seu navegador.</span></p>
+          <p style={s.setupDesc}>Cole sua API Key da Anthropic.<br/><span style={{color:"#6b6762",fontSize:12}}>Salva apenas no seu navegador.</span></p>
           <div style={s.keyRow}>
             <input type={showKey?"text":"password"} value={apiKey} onChange={e=>setApiKey(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleSetKey()} placeholder="sk-ant-api03-..." style={s.keyInput}/>
             <button onClick={()=>setShowKey(!showKey)} style={s.eyeBtn}>{showKey?"🙈":"👁️"}</button>
           </div>
           <label style={s.rememberRow}>
-            <input type="checkbox" checked={rememberKey} onChange={e=>setRememberKey(e.target.checked)} style={{accentColor:"#00ff87"}}/>
-            <span style={{fontSize:12,color:"#666"}}>Lembrar minha chave neste navegador</span>
+            <input type="checkbox" checked={rememberKey} onChange={e=>setRememberKey(e.target.checked)} style={{accentColor:"#cc785c"}}/>
+            <span style={{fontSize:13,color:"#8c8984"}}>Lembrar minha chave neste navegador</span>
           </label>
           {keyError&&<div style={s.errBox}>{keyError}</div>}
           <button onClick={handleSetKey} style={s.confirmBtn}>Entrar →</button>
@@ -325,34 +361,40 @@ export default function App() {
     </div>
   );
 
-  // ── Main ──
+  // ── Main UI ──
   return (
     <div style={s.root}><style>{css}</style>
       <div style={s.layout}>
 
         {/* Sidebar */}
-        <div style={{...s.sidebar, width:sidebarOpen?242:0, minWidth:sidebarOpen?242:0}}>
+        <div style={{...s.sidebar, width:sidebarOpen?248:0, minWidth:sidebarOpen?248:0}}>
           {sidebarOpen&&<>
-            <div style={s.sidebarHeader}><div style={s.logoSmall}>{"</>"}</div><span style={s.sidebarBrand}>Code Agent</span></div>
+            <div style={s.sidebarHeader}>
+              <div style={s.logoSmall}>CA</div>
+              <span style={s.sidebarBrand}>Code Agent</span>
+            </div>
             <button onClick={startNewChat} style={s.newChatBtn}>+ Novo Chat</button>
+
             <div style={s.toggleRow}>
               <span style={s.toggleLabel}>🔍 Busca na Web</span>
-              <div onClick={()=>setWebSearch(!webSearch)} style={{...s.toggle, background:webSearch?"#00ff87":"#222"}}>
+              <div onClick={()=>setWebSearch(!webSearch)} style={{...s.toggle, background:webSearch?"#cc785c":"#2c2c2a"}}>
                 <div style={{...s.toggleKnob, transform:webSearch?"translateX(16px)":"translateX(0)"}}/>
               </div>
             </div>
+
             <div style={s.featuresBox}>
-              {[["📄","Upload PDF"],["🖼️","Upload Imagem"],["📝","Upload Código"],["🔗","Leitor de URL"],["💾","Histórico local"]].map(([i,l])=>(
+              {[["📄","Upload PDF"],["🖼️","Upload Imagem"],["📝","Upload Código"],["🔗","Leitor de URL"],["💾","Histórico local"],["⚡","Streaming"]].map(([i,l])=>(
                 <div key={l} style={s.featRow}><span>{i}</span><span>{l}</span><span style={s.featOk}>✓</span></div>
               ))}
             </div>
+
             <div style={s.histLabel}>HISTÓRICO</div>
             <div style={s.chatList}>
               {chatsIndex.length===0
                 ? <div style={s.emptyHist}>Nenhuma conversa ainda</div>
                 : chatsIndex.map(chat=>(
                   <div key={chat.id} onClick={()=>openChat(chat.id)} className="chat-item"
-                    style={{...s.chatItem, background:activeChatId===chat.id?"#1a2a1a":"transparent", borderLeft:activeChatId===chat.id?"2px solid #00ff87":"2px solid transparent"}}>
+                    style={{...s.chatItem, background:activeChatId===chat.id?"#252320":"transparent", borderLeft:activeChatId===chat.id?"2px solid #cc785c":"2px solid transparent"}}>
                     <div style={s.chatInfo}><div style={s.chatTitle}>{chat.title}</div><div style={s.chatDate}>{fmtDate(chat.updatedAt)}</div></div>
                     <button onClick={e=>removeChat(e,chat.id)} style={s.delBtn} className="del-btn">×</button>
                   </div>
@@ -370,25 +412,24 @@ export default function App() {
             <span style={s.headerTitle}>{activeChatId ? chatsIndex.find(c=>c.id===activeChatId)?.title||"Chat" : "Novo Chat"}</span>
             <div style={s.badges}>
               {webSearch&&<div style={s.badge}>🔍 Web</div>}
-              <div style={s.badge}>📎 Files</div>
-              <div style={s.badge}>🔗 URL</div>
+              <div style={s.badge}>⚡ Stream</div>
               <div style={s.statusDot}/>
             </div>
           </div>
 
           <div style={s.chatArea}>
-            {uiMessages.length===0&&(
+            {uiMessages.length===0&&!loading&&(
               <div style={s.welcome}>
                 <div style={s.wIcon}>⚡</div>
-                <h3 style={s.wTitle}>Pronto para codar!</h3>
-                <p style={s.wSub}>Descreva, envie arquivo ou cole um link de referência.</p>
+                <h3 style={s.wTitle}>Olá! Sou seu Code Agent.</h3>
+                <p style={s.wSub}>Me fale o que precisa — código, dúvida, arquivo ou link de referência.</p>
                 <div style={s.featureCards}>
-                  {[{icon:"📝",label:"Código",desc:"Crie, edite ou corrija qualquer código"},{icon:"🔗",label:"URL",desc:"Analisa sites como referência visual"},{icon:"📄",label:"PDF",desc:"Lê documentos e extrai código"},{icon:"🖼️",label:"Imagem",desc:"Interpreta prints e diagramas"}].map(f=>(
+                  {[{icon:"📝",label:"Código",desc:"Crie, edite ou corrija"},{icon:"🔗",label:"URL",desc:"Analisa sites de referência"},{icon:"📄",label:"PDF",desc:"Lê documentos e specs"},{icon:"🖼️",label:"Imagem",desc:"Interpreta prints e erros"}].map(f=>(
                     <div key={f.label} style={s.fCard}><div style={s.fCardIcon}>{f.icon}</div><div style={s.fCardLabel}>{f.label}</div><div style={s.fCardDesc}>{f.desc}</div></div>
                   ))}
                 </div>
                 <div style={s.exGrid}>
-                  {["Analise esse site e recrie no meu estilo","Crie uma landing page baseada nessa referência","Quero um menu igual ao desse site","Copie o layout desse site e adapte minhas cores"].map(ex=>(
+                  {["Me ajuda a criar uma landing page","Crie uma função de validação de CPF","Analise esse site como referência","Meu código está com erro, me ajuda?"].map(ex=>(
                     <button key={ex} style={s.exBtn} onClick={()=>setInput(ex)} className="ex-btn">{ex}</button>
                   ))}
                 </div>
@@ -396,43 +437,48 @@ export default function App() {
             )}
 
             {uiMessages.map((msg,i)=>(
-              <div key={i} style={{...s.msgRow, justifyContent:msg.role==="user"?"flex-end":"flex-start"}}>
-                {msg.role==="assistant"&&<div style={s.avatar}>{"</>"}</div>}
+              <div key={i} style={{...s.msgRow, flexDirection:msg.role==="user"?"row-reverse":"row"}}>
+                {msg.role==="assistant"&&<div style={s.avatar}>CA</div>}
                 <div style={msg.role==="user"?s.userBubble:s.agentBubble}>
                   {msg.attachment&&(
                     <div style={s.attachChip}>
                       <span>{fileIcon(msg.attachment.kind)}</span>
-                      <span style={s.attachName}>{msg.attachment.kind==="url" ? msg.attachment.url : msg.attachment.name}</span>
+                      <span style={s.attachName}>{msg.attachment.kind==="url"?msg.attachment.url:msg.attachment.name}</span>
                     </div>
                   )}
-                  {msg.searched&&<div style={s.searchedTag}>🔍 Pesquisado na web</div>}
                   <div className="msg-content" dangerouslySetInnerHTML={{__html:msg.role==="assistant"?md(msg.content):msg.content.replace(/</g,"&lt;")}}/>
                 </div>
               </div>
             ))}
 
+            {/* Streaming / loading bubble */}
             {loading&&(
-              <div style={{...s.msgRow,justifyContent:"flex-start"}}>
-                <div style={s.avatar}>{"</>"}</div>
+              <div style={{...s.msgRow, flexDirection:"row"}}>
+                <div style={s.avatar}>CA</div>
                 <div style={s.agentBubble}>
-                  {searching
-                    ? <div style={s.searchingRow}><div style={s.searchPulse}/><span style={s.searchingText}>Pesquisando na web…</span></div>
-                    : <div style={s.typing}><span className="dot"/><span className="dot"/><span className="dot"/></div>}
+                  {searching&&!streamText?(
+                    <div style={s.searchingRow}><div style={s.searchPulse}/><span style={s.searchingText}>Pesquisando na web…</span></div>
+                  ) : streamText ? (
+                    <div className="msg-content streaming" dangerouslySetInnerHTML={{__html:md(streamText)}}/>
+                  ) : (
+                    <div style={s.typing}><span className="dot"/><span className="dot"/><span className="dot"/></div>
+                  )}
                 </div>
               </div>
             )}
-            {error&&<div style={{...s.errBox,margin:"0 0 8px"}}>{error}</div>}
+
+            {error&&<div style={{...s.errBox, alignSelf:"stretch"}}>{error}</div>}
             <div ref={bottomRef}/>
           </div>
 
           {/* URL box */}
           {showUrlBox&&(
             <div style={s.urlBox}>
-              <span style={s.urlIcon}>🔗</span>
+              <span>🔗</span>
               <input ref={urlRef} value={urlInput} onChange={e=>setUrlInput(e.target.value)} onKeyDown={onUrlKey}
-                placeholder="https://site-referencia.com" style={s.urlInput}/>
-              <button onClick={handleFetchUrl} disabled={fetchingUrl||!urlInput.trim()} style={{...s.urlBtn, opacity:fetchingUrl||!urlInput.trim()?0.5:1}}>
-                {fetchingUrl?"…":"Carregar"}
+                placeholder="https://site-de-referencia.com" style={s.urlInput}/>
+              <button onClick={handleFetchUrl} disabled={fetchingUrl||!urlInput.trim()} style={{...s.urlBtn,opacity:fetchingUrl||!urlInput.trim()?0.5:1}}>
+                {fetchingUrl?"Carregando…":"Carregar"}
               </button>
               <button onClick={()=>{setShowUrlBox(false);setUrlInput("");}} style={s.urlClose}>×</button>
             </div>
@@ -442,8 +488,8 @@ export default function App() {
           {attachment&&(
             <div style={s.attachPreview}>
               <span>{fileIcon(attachment.kind)}</span>
-              <span style={s.attachName}>{attachment.kind==="url" ? attachment.url : attachment.name}</span>
-              {attachment.kind!=="url"&&<span style={s.attachSz}>{fmtBytes(attachment.size)}</span>}
+              <span style={s.attachName}>{attachment.kind==="url"?attachment.url:attachment.name}</span>
+              {attachment.kind!=="url"&&<span style={{color:"#6b6762",fontSize:12}}>{fmtBytes(attachment.size)}</span>}
               <button onClick={()=>setAttachment(null)} style={s.removeAttach}>×</button>
             </div>
           )}
@@ -454,9 +500,11 @@ export default function App() {
               accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.txt,.js,.ts,.jsx,.tsx,.py,.html,.css,.json,.md,.csv"
               onChange={handleFilePick}/>
             <button onClick={()=>fileRef.current?.click()} style={s.toolBtn} title="Anexar arquivo">📎</button>
-            <button onClick={()=>setShowUrlBox(!showUrlBox)} style={{...s.toolBtn, background:showUrlBox?"#1a2a1a":"#1a1a1a", borderColor:showUrlBox?"#00ff8744":"#252525"}} title="Colar link de referência">🔗</button>
+            <button onClick={()=>setShowUrlBox(!showUrlBox)}
+              style={{...s.toolBtn, background:showUrlBox?"#252320":"#1e1e1c", borderColor:showUrlBox?"#cc785c55":"#2c2c2a"}}
+              title="Colar link de referência">🔗</button>
             <textarea value={input} onChange={e=>setInput(e.target.value)} onKeyDown={onKey} rows={3} style={s.textarea}
-              placeholder={attachment?.kind==="url" ? `Instrução sobre "${attachment.name}"… (ex: recrie esse layout)` : "Descreva, cole código, anexe arquivo ou cole um link…"}/>
+              placeholder={attachment?.kind==="url"?`Instrução para "${attachment.name}"…`:"Me diga o que precisa… (Enter envia, Shift+Enter quebra linha)"}/>
             <button onClick={handleSend} disabled={loading||(!input.trim()&&!attachment)}
               style={{...s.sendBtn, opacity:loading||(!input.trim()&&!attachment)?0.4:1}}>
               {loading?"…":"→"}
@@ -468,21 +516,17 @@ export default function App() {
   );
 }
 
-// ─── Styles — visual inspirado no Claude.ai ────────────────────────
+// ─── Styles ────────────────────────────────────────────────────────
 const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI','Inter',Helvetica,Arial,sans-serif";
-const MONO = "'JetBrains Mono','Fira Code','Cascadia Code',Consolas,monospace";
 
 const s = {
-  // Layout base
   root:{display:"flex",flexDirection:"column",height:"100vh",background:"#1c1917",color:"#e8e3dc",fontFamily:FONT,overflow:"hidden",fontSize:15},
   layout:{display:"flex",flex:1,overflow:"hidden"},
-
-  // Sidebar
   sidebar:{background:"#111110",borderRight:"1px solid #2c2c2a",display:"flex",flexDirection:"column",transition:"width .25s ease,min-width .25s ease",overflow:"hidden",flexShrink:0},
   sidebarHeader:{display:"flex",alignItems:"center",gap:10,padding:"18px 16px 14px",borderBottom:"1px solid #252523"},
-  logoSmall:{width:30,height:30,background:"linear-gradient(135deg,#cc785c,#d4a574)",borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:800,color:"#fff",flexShrink:0,letterSpacing:-0.5},
+  logoSmall:{width:30,height:30,background:"linear-gradient(135deg,#cc785c,#d4a574)",borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:800,color:"#fff",flexShrink:0},
   sidebarBrand:{fontSize:14,fontWeight:600,color:"#e8e3dc",whiteSpace:"nowrap"},
-  newChatBtn:{margin:"12px 12px 6px",background:"#cc785c",border:"none",borderRadius:8,padding:"9px 14px",fontWeight:600,fontSize:13,color:"#fff",cursor:"pointer",fontFamily:FONT,letterSpacing:0.1},
+  newChatBtn:{margin:"12px 12px 6px",background:"#cc785c",border:"none",borderRadius:8,padding:"9px 14px",fontWeight:600,fontSize:13,color:"#fff",cursor:"pointer",fontFamily:FONT},
   toggleRow:{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 16px",borderBottom:"1px solid #1e1e1c"},
   toggleLabel:{fontSize:12,color:"#8c8984"},
   toggle:{width:36,height:20,borderRadius:10,cursor:"pointer",position:"relative",transition:"background .2s",flexShrink:0},
@@ -493,93 +537,64 @@ const s = {
   histLabel:{fontSize:10,color:"#4a4845",letterSpacing:1.5,padding:"12px 16px 4px",textTransform:"uppercase",fontWeight:600},
   chatList:{flex:1,overflowY:"auto",padding:"2px 0"},
   emptyHist:{fontSize:12,color:"#4a4845",textAlign:"center",padding:"28px 16px",lineHeight:1.6},
-  chatItem:{display:"flex",alignItems:"center",padding:"9px 10px 9px 14px",cursor:"pointer",gap:6,transition:"background .15s",borderRadius:0},
+  chatItem:{display:"flex",alignItems:"center",padding:"9px 10px 9px 14px",cursor:"pointer",gap:6,transition:"background .15s"},
   chatInfo:{flex:1,minWidth:0},
-  chatTitle:{fontSize:12,color:"#b8b2ac",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",fontWeight:400},
+  chatTitle:{fontSize:12,color:"#b8b2ac",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"},
   chatDate:{fontSize:11,color:"#4a4845",marginTop:2},
   delBtn:{background:"transparent",border:"none",color:"#4a4845",cursor:"pointer",fontSize:17,padding:"0 3px",lineHeight:1,flexShrink:0,display:"none"},
   logoutBtn:{margin:"8px 12px 16px",background:"transparent",border:"1px solid #2c2c2a",borderRadius:8,padding:"8px 14px",fontSize:12,color:"#6b6762",cursor:"pointer",fontFamily:FONT,textAlign:"left"},
-
-  // Main area
   main:{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"},
   header:{display:"flex",alignItems:"center",gap:10,padding:"13px 20px",borderBottom:"1px solid #2c2c2a",background:"#111110",flexShrink:0},
   menuBtn:{background:"transparent",border:"1px solid #2c2c2a",borderRadius:6,color:"#6b6762",cursor:"pointer",padding:"5px 9px",fontSize:13,fontFamily:FONT},
-  headerTitle:{flex:1,fontSize:13,color:"#6b6762",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",fontWeight:400},
+  headerTitle:{flex:1,fontSize:13,color:"#6b6762",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"},
   badges:{display:"flex",alignItems:"center",gap:6,flexShrink:0},
   badge:{fontSize:11,color:"#cc785c",border:"1px solid #cc785c44",borderRadius:20,padding:"2px 9px",fontWeight:500},
   statusDot:{width:8,height:8,borderRadius:"50%",background:"#4caf78",flexShrink:0,boxShadow:"0 0 6px #4caf7888"},
-
-  // Chat area
-  chatArea:{flex:1,overflowY:"auto",padding:"28px 20px",display:"flex",flexDirection:"column",gap:24,maxWidth:860,width:"100%",margin:"0 auto",boxSizing:"border-box",alignSelf:"center"},
-
-  // Welcome
-  welcome:{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",textAlign:"center",gap:16,padding:20},
+  chatArea:{flex:1,overflowY:"auto",padding:"28px 0",display:"flex",flexDirection:"column",gap:28},
+  welcome:{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",textAlign:"center",gap:16,padding:"20px 40px"},
   wIcon:{fontSize:48},
   wTitle:{margin:0,fontSize:22,color:"#e8e3dc",fontWeight:600,letterSpacing:-0.3},
   wSub:{margin:0,fontSize:15,color:"#8c8984",lineHeight:1.6},
   featureCards:{display:"flex",gap:12,flexWrap:"wrap",justifyContent:"center",maxWidth:520},
   fCard:{background:"#1e1e1c",border:"1px solid #2c2c2a",borderRadius:12,padding:"14px 16px",width:112,textAlign:"center",display:"flex",flexDirection:"column",gap:5},
-  fCardIcon:{fontSize:24},
-  fCardLabel:{fontSize:13,color:"#e8e3dc",fontWeight:600},
-  fCardDesc:{fontSize:11,color:"#6b6762",lineHeight:1.5},
+  fCardIcon:{fontSize:24},fCardLabel:{fontSize:13,color:"#e8e3dc",fontWeight:600},fCardDesc:{fontSize:11,color:"#6b6762",lineHeight:1.5},
   exGrid:{display:"flex",flexWrap:"wrap",gap:8,justifyContent:"center",maxWidth:580},
-  exBtn:{background:"#1e1e1c",border:"1px solid #2c2c2a",borderRadius:20,padding:"8px 16px",color:"#8c8984",fontSize:13,cursor:"pointer",fontFamily:FONT,lineHeight:1.4,textAlign:"left"},
-
-  // Messages
-  msgRow:{display:"flex",gap:14,alignItems:"flex-start",width:"100%"},
-  avatar:{width:32,height:32,flexShrink:0,background:"linear-gradient(135deg,#cc785c,#d4a574)",borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:800,color:"#fff",letterSpacing:-0.5},
-
-  // User bubble — simples, sem fundo pesado
+  exBtn:{background:"#1e1e1c",border:"1px solid #2c2c2a",borderRadius:20,padding:"8px 16px",color:"#8c8984",fontSize:13,cursor:"pointer",fontFamily:FONT,lineHeight:1.4},
+  msgRow:{display:"flex",gap:14,alignItems:"flex-start",padding:"0 24px",maxWidth:860,width:"100%",margin:"0 auto",boxSizing:"border-box"},
+  avatar:{width:32,height:32,flexShrink:0,background:"linear-gradient(135deg,#cc785c,#d4a574)",borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:800,color:"#fff"},
   userBubble:{background:"#2a2826",border:"1px solid #38352f",borderRadius:"18px 18px 4px 18px",padding:"12px 18px",maxWidth:"78%",fontSize:15,lineHeight:1.65,color:"#e8e3dc",marginLeft:"auto",whiteSpace:"pre-wrap",wordBreak:"break-word"},
-
-  // Agent bubble — limpo como no Claude.ai
-  agentBubble:{flex:1,fontSize:15,lineHeight:1.75,color:"#e8e3dc",wordBreak:"break-word",minWidth:0},
-
-  // Chips e tags
+  agentBubble:{flex:1,fontSize:15,lineHeight:1.75,color:"#e8e3dc",wordBreak:"break-word",minWidth:0,paddingTop:4},
   attachChip:{display:"inline-flex",alignItems:"center",gap:6,background:"#2a2826",border:"1px solid #38352f",borderRadius:8,padding:"5px 12px",marginBottom:10,fontSize:13,color:"#b8b2ac"},
   attachName:{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:"#cc785c"},
-  attachSz:{color:"#6b6762",flexShrink:0,fontSize:11},
-  searchedTag:{display:"inline-block",fontSize:11,color:"#cc785caa",marginBottom:10,fontStyle:"italic"},
-
-  // Loading
   searchingRow:{display:"flex",alignItems:"center",gap:10,padding:"6px 0"},
   searchPulse:{width:10,height:10,borderRadius:"50%",background:"#cc785c",animation:"pulse 1s infinite",flexShrink:0},
   searchingText:{fontSize:13,color:"#8c8984",fontStyle:"italic"},
   typing:{display:"flex",gap:5,alignItems:"center",padding:"6px 0"},
-
-  // URL box
   urlBox:{display:"flex",alignItems:"center",gap:8,padding:"12px 20px",background:"#161614",borderTop:"1px solid #2c2c2a",flexShrink:0},
-  urlIcon:{fontSize:16,flexShrink:0},
   urlInput:{flex:1,background:"#1e1e1c",border:"1px solid #38352f",borderRadius:8,padding:"9px 14px",color:"#e8e3dc",fontSize:14,fontFamily:FONT,outline:"none"},
   urlBtn:{background:"#cc785c",border:"none",borderRadius:8,padding:"9px 16px",fontWeight:600,fontSize:13,color:"#fff",cursor:"pointer",fontFamily:FONT,flexShrink:0},
-  urlClose:{background:"transparent",border:"none",color:"#6b6762",cursor:"pointer",fontSize:22,lineHeight:1,flexShrink:0,padding:"0 4px"},
-
-  // Attach preview
+  urlClose:{background:"transparent",border:"none",color:"#6b6762",cursor:"pointer",fontSize:22,lineHeight:1,flexShrink:0},
   attachPreview:{display:"flex",alignItems:"center",gap:8,padding:"10px 20px",background:"#161614",borderTop:"1px solid #2c2c2a",fontSize:13,flexShrink:0,color:"#b8b2ac"},
-  removeAttach:{background:"transparent",border:"none",color:"#6b6762",cursor:"pointer",fontSize:20,lineHeight:1,marginLeft:"auto",padding:"0 4px"},
-
-  // Input area
+  removeAttach:{background:"transparent",border:"none",color:"#6b6762",cursor:"pointer",fontSize:20,lineHeight:1,marginLeft:"auto"},
   inputArea:{display:"flex",gap:8,padding:"14px 20px",borderTop:"1px solid #2c2c2a",background:"#161614",flexShrink:0,alignItems:"flex-end"},
-  toolBtn:{width:42,height:42,flexShrink:0,background:"#1e1e1c",border:"1px solid #2c2c2a",borderRadius:10,fontSize:18,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",transition:"background .15s"},
+  toolBtn:{width:42,height:42,flexShrink:0,background:"#1e1e1c",border:"1px solid #2c2c2a",borderRadius:10,fontSize:18,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"},
   textarea:{flex:1,background:"#1e1e1c",border:"1px solid #2c2c2a",borderRadius:12,padding:"11px 16px",color:"#e8e3dc",fontSize:15,fontFamily:FONT,resize:"none",outline:"none",lineHeight:1.6},
-  sendBtn:{width:42,height:42,flexShrink:0,background:"#cc785c",border:"none",borderRadius:10,fontWeight:800,fontSize:20,color:"#fff",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",transition:"background .15s"},
-
-  // Setup screen
-  setupWrap:{flex:1,display:"flex",alignItems:"center",justifyContent:"center",padding:20,background:"#1c1917"},
+  sendBtn:{width:42,height:42,flexShrink:0,background:"#cc785c",border:"none",borderRadius:10,fontWeight:800,fontSize:22,color:"#fff",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"},
+  setupWrap:{flex:1,display:"flex",alignItems:"center",justifyContent:"center",padding:20},
   setupCard:{background:"#111110",border:"1px solid #2c2c2a",borderRadius:18,padding:44,maxWidth:440,width:"100%",display:"flex",flexDirection:"column",alignItems:"center",gap:18,textAlign:"center"},
-  logoBox:{width:56,height:56,background:"linear-gradient(135deg,#cc785c,#d4a574)",borderRadius:14,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:20,color:"#fff",letterSpacing:-1},
+  logoBox:{width:56,height:56,background:"linear-gradient(135deg,#cc785c,#d4a574)",borderRadius:14,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:18,color:"#fff"},
   setupTitle:{margin:0,fontSize:26,color:"#e8e3dc",fontWeight:600,letterSpacing:-0.5},
   setupDesc:{margin:0,fontSize:14,color:"#6b6762",lineHeight:1.7},
   keyRow:{display:"flex",gap:8,width:"100%"},
   keyInput:{flex:1,background:"#1e1e1c",border:"1px solid #2c2c2a",borderRadius:9,padding:"11px 16px",color:"#e8e3dc",fontSize:14,fontFamily:FONT,outline:"none"},
   eyeBtn:{background:"#1e1e1c",border:"1px solid #2c2c2a",borderRadius:9,cursor:"pointer",fontSize:17,padding:"0 14px",color:"#8c8984"},
   rememberRow:{display:"flex",alignItems:"center",gap:8,cursor:"pointer",alignSelf:"flex-start"},
-  confirmBtn:{width:"100%",background:"#cc785c",border:"none",borderRadius:9,padding:13,fontWeight:600,fontSize:15,color:"#fff",cursor:"pointer",fontFamily:FONT,letterSpacing:0.1},
+  confirmBtn:{width:"100%",background:"#cc785c",border:"none",borderRadius:9,padding:13,fontWeight:600,fontSize:15,color:"#fff",cursor:"pointer",fontFamily:FONT},
   errBox:{background:"#2a1414",border:"1px solid #7f3535",borderRadius:9,padding:"11px 16px",fontSize:13,color:"#f08080",width:"100%",lineHeight:1.5},
   link:{fontSize:13,color:"#cc785c",textDecoration:"none"},
 };
 
-const css=`
+const css = `
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 *{box-sizing:border-box}
 body{margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Helvetica,Arial,sans-serif}
@@ -587,67 +602,51 @@ body{margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Inter','Se
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:#2c2c2a;border-radius:5px}
 
-.chat-item:hover{background:#1e1e1c!important}
+.chat-item:hover{background:#1a1917!important}
 .chat-item:hover .del-btn{display:block!important}
+.ex-btn:hover{background:#252523!important;color:#b8b2ac!important}
 
-.ex-btn:hover{background:#252523!important;color:#b8b2ac!important;border-color:#38352f!important}
-.tool-btn:hover{background:#252523!important}
-.send-btn:hover{background:#b8674f!important}
-
-/* Texto do agente — igual ao Claude.ai */
+/* Conteúdo das mensagens */
 .msg-content{font-size:15px;line-height:1.75;color:#e8e3dc}
-.msg-content p{margin:0 0 12px}
-.msg-content p:last-child{margin-bottom:0}
-.msg-content h2.h2{font-size:17px;font-weight:600;color:#e8e3dc;margin:20px 0 8px;letter-spacing:-0.2px}
+.msg-content h2.h2{font-size:17px;font-weight:600;color:#e8e3dc;margin:20px 0 8px}
 .msg-content h3.h3{font-size:15px;font-weight:600;color:#e8e3dc;margin:16px 0 6px}
 .msg-content strong{font-weight:600;color:#e8e3dc}
 .msg-content em{font-style:italic;color:#b8b2ac}
-.msg-content ul,.msg-content ol{margin:8px 0 12px;padding-left:24px}
-.msg-content li{margin-bottom:4px}
 
 /* Código inline */
 .msg-content .ic{
-  background:#2a2826;
-  border:1px solid #38352f;
-  border-radius:5px;
-  padding:2px 7px;
-  font-family:'JetBrains Mono','Fira Code',Consolas,monospace;
-  font-size:13px;
-  color:#cc785c;
-  white-space:nowrap
+  background:#2a2826;border:1px solid #38352f;border-radius:5px;
+  padding:2px 7px;font-family:'JetBrains Mono','Fira Code',Consolas,monospace;
+  font-size:13px;color:#cc785c;white-space:nowrap
 }
 
 /* Blocos de código */
 .msg-content .cb{
-  background:#111110;
-  border:1px solid #2c2c2a;
-  border-radius:10px;
-  margin:14px 0;
-  overflow:hidden
+  background:#111110;border:1px solid #2c2c2a;border-radius:10px;margin:14px 0;overflow:hidden
 }
 .msg-content .cl{
-  display:flex;
-  align-items:center;
-  padding:8px 16px;
-  font-size:11px;
-  color:#6b6762;
-  border-bottom:1px solid #2c2c2a;
-  text-transform:uppercase;
-  letter-spacing:1px;
-  font-family:-apple-system,BlinkMacSystemFont,'Inter',Helvetica,sans-serif;
-  font-weight:600;
-  background:#161614
+  display:flex;align-items:center;justify-content:space-between;
+  padding:8px 16px;font-size:11px;color:#6b6762;border-bottom:1px solid #2c2c2a;
+  text-transform:uppercase;letter-spacing:1px;font-weight:600;background:#161614
 }
 .msg-content .cb code{
-  display:block;
-  padding:16px 20px;
+  display:block;padding:16px 20px;
   font-family:'JetBrains Mono','Fira Code','Cascadia Code',Consolas,monospace;
-  font-size:13.5px;
-  color:#d4c5b0;
-  line-height:1.7;
-  white-space:pre;
-  overflow-x:auto
+  font-size:13.5px;color:#d4c5b0;line-height:1.7;white-space:pre;overflow-x:auto
 }
+
+/* Botão copiar */
+.copy-btn{
+  background:#2a2826;border:1px solid #38352f;border-radius:6px;
+  padding:3px 10px;font-size:11px;color:#8c8984;cursor:pointer;
+  font-family:-apple-system,BlinkMacSystemFont,'Inter',sans-serif;
+  transition:all .15s;font-weight:500
+}
+.copy-btn:hover{background:#38352f;color:#e8e3dc}
+
+/* Cursor piscando durante streaming */
+.streaming::after{content:'▋';animation:cursor .8s infinite;color:#cc785c;font-weight:300}
+@keyframes cursor{0%,100%{opacity:1}50%{opacity:0}}
 
 /* Animações */
 @keyframes blink{0%,80%,100%{opacity:.15;transform:scale(.75)}40%{opacity:1;transform:scale(1)}}
