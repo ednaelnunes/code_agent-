@@ -109,14 +109,28 @@ const HEADERS = (key) => ({
   "anthropic-dangerous-direct-browser-access": "true",
 });
 
-// Chamada normal (usada quando há web search / tools)
+// Espera N segundos
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+// Chamada normal com retry automático (web search / tools)
 async function callNormal(apiKey, messages, useWebSearch) {
   let cur = [...messages];
   for (let i = 0; i < 6; i++) {
     const body = { model: "claude-sonnet-4-20250514", max_tokens: 4096, system: SYSTEM_PROMPT, messages: cur };
     if (useWebSearch) body.tools = [{ type: "web_search_20250305", name: "web_search" }];
-    const res  = await fetch("https://api.anthropic.com/v1/messages", { method:"POST", headers: HEADERS(apiKey), body: JSON.stringify(body) });
-    const data = await res.json();
+
+    let res, data;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      res  = await fetch("https://api.anthropic.com/v1/messages", { method:"POST", headers: HEADERS(apiKey), body: JSON.stringify(body) });
+      data = await res.json();
+      if (res.status === 529 || data.error?.type === "overloaded_error") {
+        const wait = (attempt + 1) * 8000; // 8s, 16s, 24s
+        await sleep(wait);
+        continue;
+      }
+      break;
+    }
+
     if (data.error) throw new Error(data.error.message);
     if (data.stop_reason === "end_turn")
       return data.content.filter(b=>b.type==="text").map(b=>b.text).join("\n");
@@ -130,8 +144,8 @@ async function callNormal(apiKey, messages, useWebSearch) {
   throw new Error("Limite de iterações atingido.");
 }
 
-// Streaming simples (sem tools)
-async function callStream(apiKey, messages, onChunk) {
+// Streaming com retry automático (sem tools)
+async function callStream(apiKey, messages, onChunk, onRetry) {
   const body = {
     model: "claude-sonnet-4-20250514",
     max_tokens: 4096,
@@ -139,31 +153,44 @@ async function callStream(apiKey, messages, onChunk) {
     messages,
     stream: true,
   };
-  const res = await fetch("https://api.anthropic.com/v1/messages", { method:"POST", headers: HEADERS(apiKey), body: JSON.stringify(body) });
-  if (!res.ok) { const e = await res.json(); throw new Error(e.error?.message || "Erro na API"); }
 
-  const reader  = res.body.getReader();
-  const decoder = new TextDecoder();
-  let full = "";
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const res = await fetch("https://api.anthropic.com/v1/messages", { method:"POST", headers: HEADERS(apiKey), body: JSON.stringify(body) });
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    const chunk = decoder.decode(value, { stream: true });
-    for (const line of chunk.split("\n")) {
-      if (!line.startsWith("data: ")) continue;
-      const raw = line.slice(6).trim();
-      if (!raw || raw === "[DONE]") continue;
-      try {
-        const evt = JSON.parse(raw);
-        if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta") {
-          full += evt.delta.text;
-          onChunk(full);
-        }
-      } catch { continue; }
+    if (res.status === 529) {
+      const wait = (attempt + 1) * 8000;
+      onRetry && onRetry(attempt + 1, wait / 1000);
+      await sleep(wait);
+      onChunk(""); // limpa indicador
+      continue;
     }
+
+    if (!res.ok) { const e = await res.json(); throw new Error(e.error?.message || "Erro na API"); }
+
+    const reader  = res.body.getReader();
+    const decoder = new TextDecoder();
+    let full = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = decoder.decode(value, { stream: true });
+      for (const line of chunk.split("\n")) {
+        if (!line.startsWith("data: ")) continue;
+        const raw = line.slice(6).trim();
+        if (!raw || raw === "[DONE]") continue;
+        try {
+          const evt = JSON.parse(raw);
+          if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta") {
+            full += evt.delta.text;
+            onChunk(full);
+          }
+        } catch { continue; }
+      }
+    }
+    return full;
   }
-  return full;
+  throw new Error("Servidores sobrecarregados. Tente novamente em alguns minutos.");
 }
 
 function buildApiContent(text, attachment) {
@@ -270,13 +297,15 @@ export default function App() {
       let finalText = "";
 
       if (webSearch) {
-        // Com busca na web: chama normal com indicador de busca
         setSearching(true);
         finalText = await callNormal(apiKey, newApi, true);
         setSearching(false);
       } else {
-        // Sem busca: usa streaming palavra por palavra
-        finalText = await callStream(apiKey, newApi, (chunk) => setStreamText(chunk));
+        finalText = await callStream(
+          apiKey, newApi,
+          (chunk) => setStreamText(chunk),
+          (attempt, secs) => setStreamText(`⏳ Servidores ocupados, tentando novamente em ${secs}s… (tentativa ${attempt}/3)`)
+        );
         setStreamText("");
       }
 
