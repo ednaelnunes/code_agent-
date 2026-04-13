@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect } from "react";
 
 const SYSTEM_PROMPT = `Você é um parceiro de desenvolvimento e braço direito do usuário. Sua personalidade é próxima, direta e inteligente — como um amigo desenvolvedor sênior sempre disponível.
 
@@ -14,17 +14,15 @@ Você tem acesso a:
 - Seja natural e conversacional — não robótico ou formal demais
 - Responda perguntas simples de forma simples, sem forçar estrutura
 - Use títulos, listas e blocos de código apenas quando o conteúdo realmente pedir
-- Se a mensagem for curta, responda de forma proporcional — sem enrolação
+- Se a mensagem for curta, responda de forma proporcional
 - Opine quando perguntado. Você tem experiência e pode recomendar caminhos
 - Pergunte quando estiver em dúvida, mas não faça perguntas demais de uma vez
-- Pode usar humor leve quando apropriado
 
 ## 💻 QUANDO GERAR CÓDIGO
 - Gere código limpo, comentado e seguindo boas práticas (SOLID, DRY, KISS)
 - Prefira soluções simples antes de complexas
 - Sempre inclua tratamento de erros
-- Nunca exponha credenciais hardcoded — use variáveis de ambiente
-- Nunca gere código com vulnerabilidades conhecidas
+- Nunca exponha credenciais hardcoded
 - Se o usuário não informar a linguagem, pergunte antes de gerar
 
 ## 🔗 QUANDO ANALISAR UM SITE (URL)
@@ -38,24 +36,20 @@ Você tem acesso a:
 
 ## 🔐 LIMITES INEGOCIÁVEIS
 - NUNCA gere código malicioso, destrutivo ou antiético
-- NUNCA produza conteúdo prejudicial
 - SEMPRE proteja a segurança e privacidade do usuário
 
-## 🌍 IDIOMA
-Responda sempre em Português do Brasil, com linguagem natural e acessível.
-Adapte o nível técnico ao contexto do usuário.`;
+Responda sempre em Português do Brasil, com linguagem natural e acessível.`;
 
 // ─── Storage ───────────────────────────────────────────────────────
 const CHATS_KEY = "codeagent:chats-index";
 const chatKey   = (id) => `codeagent:chat:${id}`;
 const KEY_STORE = "codeagent:apikey";
 const ls = {
-  get: (k) => { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
+  get: (k)    => { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
   set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
-  del: (k) => { try { localStorage.removeItem(k); } catch {} },
+  del: (k)    => { try { localStorage.removeItem(k); } catch {} },
 };
 
-// ─── Utils ─────────────────────────────────────────────────────────
 const genId      = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 const shortTitle = (t) => t.length > 38 ? t.slice(0, 38) + "…" : t;
 const fmtDate    = (ts) => new Date(ts).toLocaleDateString("pt-BR", { day: "2-digit", month: "short" });
@@ -78,14 +72,14 @@ async function fetchSiteContent(url) {
     `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
     `https://corsproxy.io/?${encodeURIComponent(url)}`,
   ];
-  for (const proxyUrl of proxies) {
+  for (const p of proxies) {
     try {
-      const res = await fetch(proxyUrl, { signal: AbortSignal.timeout(12000) });
+      const res = await fetch(p, { signal: AbortSignal.timeout(12000) });
       if (!res.ok) continue;
-      let html = proxyUrl.includes("allorigins") ? (await res.json()).contents || "" : await res.text();
+      let html = p.includes("allorigins") ? (await res.json()).contents || "" : await res.text();
       if (!html) continue;
-      const cleaned = html.replace(/<script[\s\S]*?<\/script>/gi,"").replace(/<noscript[\s\S]*?<\/noscript>/gi,"").replace(/<!--[\s\S]*?-->/g,"").replace(/\s{3,}/g," ").trim();
-      return { ok: true, content: cleaned.length > 12000 ? cleaned.slice(0, 12000) + "\n[truncado]" : cleaned, url };
+      const clean = html.replace(/<script[\s\S]*?<\/script>/gi,"").replace(/<noscript[\s\S]*?<\/noscript>/gi,"").replace(/<!--[\s\S]*?-->/g,"").replace(/\s{3,}/g," ").trim();
+      return { content: clean.length > 12000 ? clean.slice(0,12000)+"\n[truncado]" : clean };
     } catch { continue; }
   }
   throw new Error("Não foi possível acessar o site.");
@@ -95,9 +89,9 @@ async function fetchSiteContent(url) {
 function md(text) {
   return text
     .replace(/```(\w+)?\n([\s\S]*?)```/g, (_, lang, code) => {
-      const escaped = code.replace(/</g,"&lt;").replace(/>/g,"&gt;");
-      const encoded = encodeURIComponent(code);
-      return `<pre class="cb"><div class="cl"><span>${lang||"código"}</span><button class="copy-btn" data-code="${encoded}" onclick="(function(btn){var c=decodeURIComponent(btn.getAttribute('data-code'));navigator.clipboard.writeText(c).then(function(){btn.textContent='✓ Copiado!';btn.style.color='#4caf78';setTimeout(function(){btn.textContent='Copiar';btn.style.color='';},2000)});})(this)">Copiar</button></div><code>${escaped}</code></pre>`;
+      const esc = code.replace(/</g,"&lt;").replace(/>/g,"&gt;");
+      const enc = encodeURIComponent(code);
+      return `<pre class="cb"><div class="cl"><span>${lang||"código"}</span><button class="copy-btn" data-code="${enc}" onclick="(function(btn){navigator.clipboard.writeText(decodeURIComponent(btn.getAttribute('data-code'))).then(function(){btn.textContent='✓ Copiado!';btn.style.color='#4caf78';setTimeout(function(){btn.textContent='Copiar';btn.style.color='';},2000)});})(this)">Copiar</button></div><code>${esc}</code></pre>`;
     })
     .replace(/`([^`]+)`/g, '<code class="ic">$1</code>')
     .replace(/^### (.+)$/gm, '<h3 class="h3">$1</h3>')
@@ -107,118 +101,83 @@ function md(text) {
     .replace(/\n/g, '<br/>');
 }
 
-// ─── Streaming agent ───────────────────────────────────────────────
-// Fase 1 (se tiver tool_use): chamada normal para resolver tools
-// Fase 2: streaming da resposta final
-async function runAgentStream(apiKey, messages, useWebSearch, onChunk, onSearching) {
+// ─── API call helpers ──────────────────────────────────────────────
+const HEADERS = (key) => ({
+  "Content-Type": "application/json",
+  "x-api-key": key,
+  "anthropic-version": "2023-06-01",
+  "anthropic-dangerous-direct-browser-access": "true",
+});
+
+// Chamada normal (usada quando há web search / tools)
+async function callNormal(apiKey, messages, useWebSearch) {
   let cur = [...messages];
-
-  // Se web search ativo, primeiro resolve tools com chamada normal
-  for (let i = 0; i < 5; i++) {
-    const needsStream = i === 0 || true; // sempre tenta stream
-    const body = {
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 4096,
-      system: SYSTEM_PROMPT,
-      messages: cur,
-    };
+  for (let i = 0; i < 6; i++) {
+    const body = { model: "claude-sonnet-4-20250514", max_tokens: 4096, system: SYSTEM_PROMPT, messages: cur };
     if (useWebSearch) body.tools = [{ type: "web_search_20250305", name: "web_search" }];
-
-    // Tenta streaming
-    const streamBody = { ...body, stream: true };
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true",
-      },
-      body: JSON.stringify(streamBody),
-    });
-
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.error?.message || "Erro na API");
-    }
-
-    const reader  = res.body.getReader();
-    const decoder = new TextDecoder();
-    let fullText       = "";
-    let stopReason     = null;
-    let toolUseBlocks  = [];
-    let curToolUse     = null;
-    let assistantContent = [];
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const chunk = decoder.decode(value, { stream: true });
-      for (const line of chunk.split("\n")) {
-        if (!line.startsWith("data: ")) continue;
-        const raw = line.slice(6).trim();
-        if (!raw || raw === "[DONE]") continue;
-        let evt;
-        try { evt = JSON.parse(raw); } catch { continue; }
-
-        if (evt.type === "content_block_start") {
-          if (evt.content_block?.type === "text") {
-            assistantContent.push({ type: "text", text: "" });
-          } else if (evt.content_block?.type === "tool_use") {
-            curToolUse = { id: evt.content_block.id, name: evt.content_block.name, input: "", type: "tool_use" };
-            assistantContent.push(curToolUse);
-          }
-        }
-        if (evt.type === "content_block_delta") {
-          if (evt.delta?.type === "text_delta") {
-            fullText += evt.delta.text;
-            const last = assistantContent.filter(b=>b.type==="text").at(-1);
-            if (last) last.text += evt.delta.text;
-            onChunk(fullText); // live update!
-          }
-          if (evt.delta?.type === "input_json_delta" && curToolUse) {
-            curToolUse.input += evt.delta.partial_json;
-          }
-        }
-        if (evt.type === "content_block_stop") {
-          if (curToolUse) { toolUseBlocks.push({ ...curToolUse }); curToolUse = null; }
-        }
-        if (evt.type === "message_delta") {
-          stopReason = evt.delta?.stop_reason;
-        }
-      }
-    }
-
-    if (stopReason === "end_turn") return fullText;
-
-    if (stopReason === "tool_use" && toolUseBlocks.length > 0) {
-      onSearching(true);
-      cur.push({ role: "assistant", content: assistantContent });
-      cur.push({
-        role: "user",
-        content: toolUseBlocks.map(b => ({ type: "tool_result", tool_use_id: b.id, content: [] }))
-      });
-      onChunk(""); // limpa texto parcial
+    const res  = await fetch("https://api.anthropic.com/v1/messages", { method:"POST", headers: HEADERS(apiKey), body: JSON.stringify(body) });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error.message);
+    if (data.stop_reason === "end_turn")
+      return data.content.filter(b=>b.type==="text").map(b=>b.text).join("\n");
+    if (data.stop_reason === "tool_use") {
+      cur.push({ role:"assistant", content: data.content });
+      cur.push({ role:"user", content: data.content.filter(b=>b.type==="tool_use").map(b=>({ type:"tool_result", tool_use_id:b.id, content:[] })) });
       continue;
     }
-
-    return fullText;
+    return data.content?.filter(b=>b.type==="text").map(b=>b.text).join("\n") || "";
   }
   throw new Error("Limite de iterações atingido.");
+}
+
+// Streaming simples (sem tools)
+async function callStream(apiKey, messages, onChunk) {
+  const body = {
+    model: "claude-sonnet-4-20250514",
+    max_tokens: 4096,
+    system: SYSTEM_PROMPT,
+    messages,
+    stream: true,
+  };
+  const res = await fetch("https://api.anthropic.com/v1/messages", { method:"POST", headers: HEADERS(apiKey), body: JSON.stringify(body) });
+  if (!res.ok) { const e = await res.json(); throw new Error(e.error?.message || "Erro na API"); }
+
+  const reader  = res.body.getReader();
+  const decoder = new TextDecoder();
+  let full = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value, { stream: true });
+    for (const line of chunk.split("\n")) {
+      if (!line.startsWith("data: ")) continue;
+      const raw = line.slice(6).trim();
+      if (!raw || raw === "[DONE]") continue;
+      try {
+        const evt = JSON.parse(raw);
+        if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta") {
+          full += evt.delta.text;
+          onChunk(full);
+        }
+      } catch { continue; }
+    }
+  }
+  return full;
 }
 
 function buildApiContent(text, attachment) {
   if (!attachment) return text;
   const parts = [];
   if (attachment.kind === "image")
-    parts.push({ type: "image", source: { type: "base64", media_type: attachment.mediaType, data: attachment.data } });
+    parts.push({ type:"image", source:{ type:"base64", media_type:attachment.mediaType, data:attachment.data } });
   else if (attachment.kind === "pdf")
-    parts.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: attachment.data } });
+    parts.push({ type:"document", source:{ type:"base64", media_type:"application/pdf", data:attachment.data } });
   else if (attachment.kind === "url")
-    parts.push({ type: "text", text: `🔗 SITE ANALISADO: ${attachment.url}\n\nHTML/CSS:\n\`\`\`html\n${attachment.content}\n\`\`\`` });
+    parts.push({ type:"text", text:`🔗 SITE ANALISADO: ${attachment.url}\n\nHTML/CSS:\n\`\`\`html\n${attachment.content}\n\`\`\`` });
   else
-    parts.push({ type: "text", text: `📎 Arquivo: ${attachment.name}\n\`\`\`\n${attachment.content}\n\`\`\`` });
-  if (text) parts.push({ type: "text", text });
+    parts.push({ type:"text", text:`📎 Arquivo: ${attachment.name}\n\`\`\`\n${attachment.content}\n\`\`\`` });
+  if (text) parts.push({ type:"text", text });
   return parts;
 }
 
@@ -234,7 +193,7 @@ export default function App() {
   const [activeChatId, setActiveChatId] = useState(null);
   const [messages, setMessages]         = useState([]);
   const [uiMessages, setUiMessages]     = useState([]);
-  const [streamText, setStreamText]     = useState("");  // texto chegando em tempo real
+  const [streamText, setStreamText]     = useState("");
   const [input, setInput]               = useState("");
   const [urlInput, setUrlInput]         = useState("");
   const [showUrlBox, setShowUrlBox]     = useState(false);
@@ -245,14 +204,11 @@ export default function App() {
   const [error, setError]               = useState("");
   const [sidebarOpen, setSidebarOpen]   = useState(true);
   const [webSearch, setWebSearch]       = useState(true);
-  const bottomRef  = useRef(null);
-  const fileRef    = useRef(null);
-  const urlRef     = useRef(null);
-  const chatIdRef  = useRef(null);
-  const newApiRef  = useRef([]);
-  const newUiRef   = useRef([]);
+  const bottomRef = useRef(null);
+  const fileRef   = useRef(null);
+  const urlRef    = useRef(null);
 
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [uiMessages, streamText, loading]);
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior:"smooth" }); }, [uiMessages, streamText, loading]);
   useEffect(() => { if (showUrlBox) urlRef.current?.focus(); }, [showUrlBox]);
 
   const handleSetKey = () => {
@@ -262,20 +218,20 @@ export default function App() {
     } else setKeyError("Chave inválida. Deve começar com sk-ant-");
   };
 
-  const handleLogout   = () => { ls.del(KEY_STORE); setApiKey(""); setApiKeySet(false); setMessages([]); setUiMessages([]); setActiveChatId(null); };
-  const startNewChat   = () => { setActiveChatId(null); setMessages([]); setUiMessages([]); setError(""); setInput(""); setAttachment(null); setUrlInput(""); setShowUrlBox(false); setStreamText(""); };
-  const openChat       = (id) => { const d = ls.get(chatKey(id)); if (d) { setMessages(d.messages); setUiMessages(d.uiMessages||[]); setActiveChatId(id); setError(""); setAttachment(null); setStreamText(""); } };
-  const removeChat     = (e, id) => { e.stopPropagation(); ls.del(chatKey(id)); const ni=chatsIndex.filter(c=>c.id!==id); setChatsIndex(ni); ls.set(CHATS_KEY,ni); if(activeChatId===id) startNewChat(); };
+  const handleLogout = () => { ls.del(KEY_STORE); setApiKey(""); setApiKeySet(false); setMessages([]); setUiMessages([]); setActiveChatId(null); };
+  const startNewChat = () => { setActiveChatId(null); setMessages([]); setUiMessages([]); setError(""); setInput(""); setAttachment(null); setStreamText(""); };
+  const openChat     = (id) => { const d = ls.get(chatKey(id)); if (d) { setMessages(d.messages); setUiMessages(d.uiMessages||[]); setActiveChatId(id); setError(""); setAttachment(null); setStreamText(""); } };
+  const removeChat   = (e, id) => { e.stopPropagation(); ls.del(chatKey(id)); const ni=chatsIndex.filter(c=>c.id!==id); setChatsIndex(ni); ls.set(CHATS_KEY,ni); if(activeChatId===id) startNewChat(); };
 
   const handleFilePick = async (e) => {
-    const file = e.target.files?.[0]; if (!file) return; e.target.value = "";
+    const file = e.target.files?.[0]; if (!file) return; e.target.value="";
     const kind = SUPPORTED[file.type];
-    if (!kind) { setError("Tipo não suportado. Use PDF, imagem ou arquivo de texto/código."); return; }
+    if (!kind) { setError("Tipo não suportado. Use PDF, imagem ou código."); return; }
     if (file.size > 4*1024*1024) { setError("Arquivo muito grande. Limite: 4 MB."); return; }
     setError("");
     try {
-      if (kind==="text") { setAttachment({ kind, name:file.name, size:file.size, content: await toText(file) }); }
-      else               { setAttachment({ kind, name:file.name, size:file.size, data: await toBase64(file), mediaType:file.type }); }
+      if (kind==="text") setAttachment({ kind, name:file.name, size:file.size, content: await toText(file) });
+      else               setAttachment({ kind, name:file.name, size:file.size, data: await toBase64(file), mediaType:file.type });
     } catch(err) { setError("Erro: "+err.message); }
   };
 
@@ -293,45 +249,54 @@ export default function App() {
 
   const handleSend = async () => {
     if ((!input.trim() && !attachment) || loading) return;
+
     const userText   = input.trim() || (attachment?.kind==="url" ? `Analise este site: ${attachment.url}` : `Analise este arquivo: ${attachment?.name}`);
     const userApiMsg = { role:"user", content: buildApiContent(userText, attachment) };
     const userUiMsg  = { role:"user", content:userText, attachment: attachment ? { name:attachment.name||attachment.url, kind:attachment.kind, url:attachment.url } : null };
-
     const newUi  = [...uiMessages, userUiMsg];
     const newApi = [...messages, userApiMsg];
-    newUiRef.current  = newUi;
-    newApiRef.current = newApi;
 
     setUiMessages(newUi); setMessages(newApi);
     setInput(""); setAttachment(null); setLoading(true); setError(""); setSearching(false); setStreamText("");
 
     let chatId = activeChatId;
     if (!chatId) {
-      chatId = genId(); chatIdRef.current = chatId; setActiveChatId(chatId);
+      chatId = genId(); setActiveChatId(chatId);
       const ni = [{ id:chatId, title:shortTitle(userText), updatedAt:Date.now() }, ...chatsIndex];
       setChatsIndex(ni); ls.set(CHATS_KEY, ni);
-    } else { chatIdRef.current = chatId; }
+    }
 
     try {
-      const finalText = await runAgentStream(
-        apiKey, newApi, webSearch,
-        (chunk) => setStreamText(chunk),       // atualiza em tempo real
-        (s) => { setSearching(s); if(s) setStreamText(""); }
-      );
+      let finalText = "";
 
-      setStreamText("");
-      const finalUi  = [...newUiRef.current,  { role:"assistant", content:finalText }];
-      const finalApi = [...newApiRef.current, { role:"assistant", content:finalText }];
+      if (webSearch) {
+        // Com busca na web: chama normal com indicador de busca
+        setSearching(true);
+        finalText = await callNormal(apiKey, newApi, true);
+        setSearching(false);
+      } else {
+        // Sem busca: usa streaming palavra por palavra
+        finalText = await callStream(apiKey, newApi, (chunk) => setStreamText(chunk));
+        setStreamText("");
+      }
+
+      const finalUi  = [...newUi,  { role:"assistant", content:finalText }];
+      const finalApi = [...newApi, { role:"assistant", content:finalText }];
       setUiMessages(finalUi); setMessages(finalApi);
-      ls.set(chatKey(chatIdRef.current), { messages:finalApi, uiMessages:finalUi });
+      ls.set(chatKey(chatId), { messages:finalApi, uiMessages:finalUi });
 
       const updated = [...chatsIndex]
-        .map(c=>c.id===chatIdRef.current?{...c,updatedAt:Date.now()}:c)
-        .sort((a,b)=>b.updatedAt-a.updatedAt);
-      if (!updated.find(c=>c.id===chatIdRef.current)) updated.unshift({ id:chatIdRef.current, title:shortTitle(userText), updatedAt:Date.now() });
+        .map(c => c.id===chatId ? {...c, updatedAt:Date.now()} : c)
+        .sort((a,b) => b.updatedAt-a.updatedAt);
+      if (!updated.find(c=>c.id===chatId)) updated.unshift({ id:chatId, title:shortTitle(userText), updatedAt:Date.now() });
       setChatsIndex(updated); ls.set(CHATS_KEY, updated);
-    } catch(err) { setStreamText(""); setError("Erro: "+err.message); }
-    finally { setLoading(false); setSearching(false); }
+
+    } catch(err) {
+      setStreamText(""); setSearching(false);
+      setError("Erro: "+err.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const onKey    = (e) => { if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();handleSend();} };
@@ -374,20 +339,17 @@ export default function App() {
               <span style={s.sidebarBrand}>Code Agent</span>
             </div>
             <button onClick={startNewChat} style={s.newChatBtn}>+ Novo Chat</button>
-
             <div style={s.toggleRow}>
               <span style={s.toggleLabel}>🔍 Busca na Web</span>
               <div onClick={()=>setWebSearch(!webSearch)} style={{...s.toggle, background:webSearch?"#cc785c":"#2c2c2a"}}>
                 <div style={{...s.toggleKnob, transform:webSearch?"translateX(16px)":"translateX(0)"}}/>
               </div>
             </div>
-
             <div style={s.featuresBox}>
-              {[["📄","Upload PDF"],["🖼️","Upload Imagem"],["📝","Upload Código"],["🔗","Leitor de URL"],["💾","Histórico local"],["⚡","Streaming"]].map(([i,l])=>(
+              {[["📄","Upload PDF"],["🖼️","Upload Imagem"],["📝","Upload Código"],["🔗","Leitor de URL"],["💾","Histórico"],["⚡","Streaming"]].map(([i,l])=>(
                 <div key={l} style={s.featRow}><span>{i}</span><span>{l}</span><span style={s.featOk}>✓</span></div>
               ))}
             </div>
-
             <div style={s.histLabel}>HISTÓRICO</div>
             <div style={s.chatList}>
               {chatsIndex.length===0
@@ -411,8 +373,7 @@ export default function App() {
             <button onClick={()=>setSidebarOpen(!sidebarOpen)} style={s.menuBtn}>{sidebarOpen?"◀":"▶"}</button>
             <span style={s.headerTitle}>{activeChatId ? chatsIndex.find(c=>c.id===activeChatId)?.title||"Chat" : "Novo Chat"}</span>
             <div style={s.badges}>
-              {webSearch&&<div style={s.badge}>🔍 Web</div>}
-              <div style={s.badge}>⚡ Stream</div>
+              {webSearch ? <div style={s.badge}>🔍 Web On</div> : <div style={{...s.badge, color:"#6b6762", borderColor:"#2c2c2a"}}>🔍 Web Off</div>}
               <div style={s.statusDot}/>
             </div>
           </div>
@@ -422,7 +383,7 @@ export default function App() {
               <div style={s.welcome}>
                 <div style={s.wIcon}>⚡</div>
                 <h3 style={s.wTitle}>Olá! Sou seu Code Agent.</h3>
-                <p style={s.wSub}>Me fale o que precisa — código, dúvida, arquivo ou link de referência.</p>
+                <p style={s.wSub}>Me diga o que precisa — código, dúvida, arquivo ou link.</p>
                 <div style={s.featureCards}>
                   {[{icon:"📝",label:"Código",desc:"Crie, edite ou corrija"},{icon:"🔗",label:"URL",desc:"Analisa sites de referência"},{icon:"📄",label:"PDF",desc:"Lê documentos e specs"},{icon:"🖼️",label:"Imagem",desc:"Interpreta prints e erros"}].map(f=>(
                     <div key={f.label} style={s.fCard}><div style={s.fCardIcon}>{f.icon}</div><div style={s.fCardLabel}>{f.label}</div><div style={s.fCardDesc}>{f.desc}</div></div>
@@ -451,13 +412,16 @@ export default function App() {
               </div>
             ))}
 
-            {/* Streaming / loading bubble */}
+            {/* Loading / streaming bubble */}
             {loading&&(
               <div style={{...s.msgRow, flexDirection:"row"}}>
                 <div style={s.avatar}>CA</div>
                 <div style={s.agentBubble}>
-                  {searching&&!streamText?(
-                    <div style={s.searchingRow}><div style={s.searchPulse}/><span style={s.searchingText}>Pesquisando na web…</span></div>
+                  {searching ? (
+                    <div style={s.searchingRow}>
+                      <div style={s.searchPulse}/>
+                      <span style={s.searchingText}>Pesquisando na web…</span>
+                    </div>
                   ) : streamText ? (
                     <div className="msg-content streaming" dangerouslySetInnerHTML={{__html:md(streamText)}}/>
                   ) : (
@@ -467,7 +431,7 @@ export default function App() {
               </div>
             )}
 
-            {error&&<div style={{...s.errBox, alignSelf:"stretch"}}>{error}</div>}
+            {error&&<div style={{...s.errBox, margin:"0 24px"}}>{error}</div>}
             <div ref={bottomRef}/>
           </div>
 
@@ -477,7 +441,8 @@ export default function App() {
               <span>🔗</span>
               <input ref={urlRef} value={urlInput} onChange={e=>setUrlInput(e.target.value)} onKeyDown={onUrlKey}
                 placeholder="https://site-de-referencia.com" style={s.urlInput}/>
-              <button onClick={handleFetchUrl} disabled={fetchingUrl||!urlInput.trim()} style={{...s.urlBtn,opacity:fetchingUrl||!urlInput.trim()?0.5:1}}>
+              <button onClick={handleFetchUrl} disabled={fetchingUrl||!urlInput.trim()}
+                style={{...s.urlBtn, opacity:fetchingUrl||!urlInput.trim()?0.5:1}}>
                 {fetchingUrl?"Carregando…":"Carregar"}
               </button>
               <button onClick={()=>{setShowUrlBox(false);setUrlInput("");}} style={s.urlClose}>×</button>
@@ -501,10 +466,10 @@ export default function App() {
               onChange={handleFilePick}/>
             <button onClick={()=>fileRef.current?.click()} style={s.toolBtn} title="Anexar arquivo">📎</button>
             <button onClick={()=>setShowUrlBox(!showUrlBox)}
-              style={{...s.toolBtn, background:showUrlBox?"#252320":"#1e1e1c", borderColor:showUrlBox?"#cc785c55":"#2c2c2a"}}
-              title="Colar link de referência">🔗</button>
+              style={{...s.toolBtn, background:showUrlBox?"#252320":"#1e1e1c", borderColor:showUrlBox?"#cc785c":"#2c2c2a"}}
+              title="Link de referência">🔗</button>
             <textarea value={input} onChange={e=>setInput(e.target.value)} onKeyDown={onKey} rows={3} style={s.textarea}
-              placeholder={attachment?.kind==="url"?`Instrução para "${attachment.name}"…`:"Me diga o que precisa… (Enter envia, Shift+Enter quebra linha)"}/>
+              placeholder={attachment?.kind==="url" ? `Instrução para "${attachment.name}"…` : "Me diga o que precisa… (Enter envia, Shift+Enter quebra linha)"}/>
             <button onClick={handleSend} disabled={loading||(!input.trim()&&!attachment)}
               style={{...s.sendBtn, opacity:loading||(!input.trim()&&!attachment)?0.4:1}}>
               {loading?"…":"→"}
@@ -550,7 +515,7 @@ const s = {
   badges:{display:"flex",alignItems:"center",gap:6,flexShrink:0},
   badge:{fontSize:11,color:"#cc785c",border:"1px solid #cc785c44",borderRadius:20,padding:"2px 9px",fontWeight:500},
   statusDot:{width:8,height:8,borderRadius:"50%",background:"#4caf78",flexShrink:0,boxShadow:"0 0 6px #4caf7888"},
-  chatArea:{flex:1,overflowY:"auto",padding:"28px 0",display:"flex",flexDirection:"column",gap:28},
+  chatArea:{flex:1,overflowY:"auto",padding:"28px 0",display:"flex",flexDirection:"column",gap:24},
   welcome:{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",textAlign:"center",gap:16,padding:"20px 40px"},
   wIcon:{fontSize:48},
   wTitle:{margin:0,fontSize:22,color:"#e8e3dc",fontWeight:600,letterSpacing:-0.3},
@@ -590,65 +555,33 @@ const s = {
   eyeBtn:{background:"#1e1e1c",border:"1px solid #2c2c2a",borderRadius:9,cursor:"pointer",fontSize:17,padding:"0 14px",color:"#8c8984"},
   rememberRow:{display:"flex",alignItems:"center",gap:8,cursor:"pointer",alignSelf:"flex-start"},
   confirmBtn:{width:"100%",background:"#cc785c",border:"none",borderRadius:9,padding:13,fontWeight:600,fontSize:15,color:"#fff",cursor:"pointer",fontFamily:FONT},
-  errBox:{background:"#2a1414",border:"1px solid #7f3535",borderRadius:9,padding:"11px 16px",fontSize:13,color:"#f08080",width:"100%",lineHeight:1.5},
+  errBox:{background:"#2a1414",border:"1px solid #7f3535",borderRadius:9,padding:"11px 16px",fontSize:13,color:"#f08080",lineHeight:1.5},
   link:{fontSize:13,color:"#cc785c",textDecoration:"none"},
 };
 
 const css = `
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 *{box-sizing:border-box}
-body{margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Helvetica,Arial,sans-serif}
+body{margin:0;padding:0}
 ::-webkit-scrollbar{width:5px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:#2c2c2a;border-radius:5px}
-
 .chat-item:hover{background:#1a1917!important}
 .chat-item:hover .del-btn{display:block!important}
 .ex-btn:hover{background:#252523!important;color:#b8b2ac!important}
-
-/* Conteúdo das mensagens */
 .msg-content{font-size:15px;line-height:1.75;color:#e8e3dc}
 .msg-content h2.h2{font-size:17px;font-weight:600;color:#e8e3dc;margin:20px 0 8px}
 .msg-content h3.h3{font-size:15px;font-weight:600;color:#e8e3dc;margin:16px 0 6px}
 .msg-content strong{font-weight:600;color:#e8e3dc}
 .msg-content em{font-style:italic;color:#b8b2ac}
-
-/* Código inline */
-.msg-content .ic{
-  background:#2a2826;border:1px solid #38352f;border-radius:5px;
-  padding:2px 7px;font-family:'JetBrains Mono','Fira Code',Consolas,monospace;
-  font-size:13px;color:#cc785c;white-space:nowrap
-}
-
-/* Blocos de código */
-.msg-content .cb{
-  background:#111110;border:1px solid #2c2c2a;border-radius:10px;margin:14px 0;overflow:hidden
-}
-.msg-content .cl{
-  display:flex;align-items:center;justify-content:space-between;
-  padding:8px 16px;font-size:11px;color:#6b6762;border-bottom:1px solid #2c2c2a;
-  text-transform:uppercase;letter-spacing:1px;font-weight:600;background:#161614
-}
-.msg-content .cb code{
-  display:block;padding:16px 20px;
-  font-family:'JetBrains Mono','Fira Code','Cascadia Code',Consolas,monospace;
-  font-size:13.5px;color:#d4c5b0;line-height:1.7;white-space:pre;overflow-x:auto
-}
-
-/* Botão copiar */
-.copy-btn{
-  background:#2a2826;border:1px solid #38352f;border-radius:6px;
-  padding:3px 10px;font-size:11px;color:#8c8984;cursor:pointer;
-  font-family:-apple-system,BlinkMacSystemFont,'Inter',sans-serif;
-  transition:all .15s;font-weight:500
-}
+.msg-content .ic{background:#2a2826;border:1px solid #38352f;border-radius:5px;padding:2px 7px;font-family:'JetBrains Mono','Fira Code',Consolas,monospace;font-size:13px;color:#cc785c;white-space:nowrap}
+.msg-content .cb{background:#111110;border:1px solid #2c2c2a;border-radius:10px;margin:14px 0;overflow:hidden}
+.msg-content .cl{display:flex;align-items:center;justify-content:space-between;padding:8px 16px;font-size:11px;color:#6b6762;border-bottom:1px solid #2c2c2a;text-transform:uppercase;letter-spacing:1px;font-weight:600;background:#161614}
+.msg-content .cb code{display:block;padding:16px 20px;font-family:'JetBrains Mono','Fira Code',Consolas,monospace;font-size:13.5px;color:#d4c5b0;line-height:1.7;white-space:pre;overflow-x:auto}
+.copy-btn{background:#2a2826;border:1px solid #38352f;border-radius:6px;padding:3px 10px;font-size:11px;color:#8c8984;cursor:pointer;font-family:-apple-system,BlinkMacSystemFont,'Inter',sans-serif;transition:all .15s;font-weight:500}
 .copy-btn:hover{background:#38352f;color:#e8e3dc}
-
-/* Cursor piscando durante streaming */
-.streaming::after{content:'▋';animation:cursor .8s infinite;color:#cc785c;font-weight:300}
-@keyframes cursor{0%,100%{opacity:1}50%{opacity:0}}
-
-/* Animações */
+.streaming::after{content:'▋';animation:blink-cursor .7s infinite;color:#cc785c}
+@keyframes blink-cursor{0%,100%{opacity:1}50%{opacity:0}}
 @keyframes blink{0%,80%,100%{opacity:.15;transform:scale(.75)}40%{opacity:1;transform:scale(1)}}
 .dot{width:8px;height:8px;background:#cc785c;border-radius:50%;display:inline-block;animation:blink 1.3s infinite}
 .dot:nth-child(2){animation-delay:.22s;background:#d4a574}
