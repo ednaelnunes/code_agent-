@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import JSZip from "jszip";
 
 const SYSTEM_PROMPT = `Você é um parceiro de desenvolvimento e braço direito do usuário. Sua personalidade é próxima, direta e inteligente — como um amigo desenvolvedor sênior sempre disponível.
 
@@ -60,10 +61,11 @@ const SUPPORTED = {
   "image/png": "image", "image/jpeg": "image", "image/gif": "image", "image/webp": "image",
   "text/plain": "text", "text/javascript": "text", "text/html": "text",
   "text/css": "text", "text/x-python": "text", "application/json": "text", "application/javascript": "text",
+  "application/zip": "zip", "application/x-zip-compressed": "zip", "application/octet-stream": "zip",
 };
 const toBase64 = (f) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.onerror = rej; r.readAsDataURL(f); });
 const toText   = (f) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsText(f); });
-const fileIcon = (k) => k === "pdf" ? "📄" : k === "image" ? "🖼️" : k === "url" ? "🔗" : "📝";
+const fileIcon = (k) => k === "pdf" ? "📄" : k === "image" ? "🖼️" : k === "url" ? "🔗" : k === "zip" ? "🗜️" : "📝";
 const fmtBytes = (b) => b < 1024 ? b + " B" : b < 1048576 ? (b/1024).toFixed(1) + " KB" : (b/1048576).toFixed(1) + " MB";
 
 // ─── URL Fetcher ───────────────────────────────────────────────────
@@ -202,6 +204,8 @@ function buildApiContent(text, attachment) {
     parts.push({ type:"document", source:{ type:"base64", media_type:"application/pdf", data:attachment.data } });
   else if (attachment.kind === "url")
     parts.push({ type:"text", text:`🔗 SITE ANALISADO: ${attachment.url}\n\nHTML/CSS:\n\`\`\`html\n${attachment.content}\n\`\`\`` });
+  else if (attachment.kind === "zip")
+    parts.push({ type:"text", text:attachment.content });
   else
     parts.push({ type:"text", text:`📎 Arquivo: ${attachment.name}\n\`\`\`\n${attachment.content}\n\`\`\`` });
   if (text) parts.push({ type:"text", text });
@@ -252,8 +256,44 @@ export default function App() {
 
   const handleFilePick = async (e) => {
     const file = e.target.files?.[0]; if (!file) return; e.target.value="";
+
+    // Detecta ZIP pelo nome também (alguns browsers enviam tipo genérico)
+    const isZip = file.name.endsWith(".zip") || file.type.includes("zip");
+    if (isZip) {
+      if (file.size > 20*1024*1024) { setError("ZIP muito grande. Limite: 20 MB."); return; }
+      setError(""); setLoading(true); setStreamText("📦 Extraindo arquivos do ZIP…");
+      try {
+        const zip     = await JSZip.loadAsync(file);
+        const TEXT_EXT = /\.(js|ts|jsx|tsx|py|html|css|json|md|txt|csv|env|yaml|yml|xml|sh|sql|php|rb|rs|go|java|c|cpp|h|cs)$/i;
+        const entries = Object.values(zip.files).filter(f => !f.dir && TEXT_EXT.test(f.name) && !f.name.includes("node_modules") && !f.name.includes(".git"));
+
+        if (entries.length === 0) { setError("Nenhum arquivo de texto/código encontrado no ZIP."); setLoading(false); setStreamText(""); return; }
+
+        // Lê até 30 arquivos, máx 300kb total
+        let combined = `📦 ZIP: ${file.name}\nArquivos encontrados: ${entries.length}\n\n`;
+        let totalSize = 0;
+        const MAX_TOTAL = 300000;
+        let fileCount = 0;
+
+        for (const entry of entries.slice(0, 30)) {
+          try {
+            const text = await entry.async("string");
+            const preview = text.length > 8000 ? text.slice(0, 8000) + "\n[... truncado]" : text;
+            combined += `--- ${entry.name} ---\n\`\`\`\n${preview}\n\`\`\`\n\n`;
+            totalSize += preview.length;
+            fileCount++;
+            if (totalSize > MAX_TOTAL) { combined += "\n[Demais arquivos omitidos por limite de tamanho]"; break; }
+          } catch { continue; }
+        }
+
+        setAttachment({ kind:"zip", name:file.name, size:file.size, content:combined, fileCount });
+      } catch(err) { setError("Erro ao extrair ZIP: "+err.message); }
+      finally { setLoading(false); setStreamText(""); }
+      return;
+    }
+
     const kind = SUPPORTED[file.type];
-    if (!kind) { setError("Tipo não suportado. Use PDF, imagem ou código."); return; }
+    if (!kind) { setError("Tipo não suportado. Use PDF, imagem, código ou ZIP."); return; }
     if (file.size > 4*1024*1024) { setError("Arquivo muito grande. Limite: 4 MB."); return; }
     setError("");
     try {
@@ -375,7 +415,7 @@ export default function App() {
               </div>
             </div>
             <div style={s.featuresBox}>
-              {[["📄","Upload PDF"],["🖼️","Upload Imagem"],["📝","Upload Código"],["🔗","Leitor de URL"],["💾","Histórico"],["⚡","Streaming"]].map(([i,l])=>(
+              {[["📄","Upload PDF"],["🖼️","Upload Imagem"],["📝","Upload Código"],["🗜️","Upload ZIP"],["🔗","Leitor de URL"],["💾","Histórico"],["⚡","Streaming"]].map(([i,l])=>(
                 <div key={l} style={s.featRow}><span>{i}</span><span>{l}</span><span style={s.featOk}>✓</span></div>
               ))}
             </div>
@@ -491,7 +531,7 @@ export default function App() {
           {/* Input bar */}
           <div style={s.inputArea}>
             <input ref={fileRef} type="file" style={{display:"none"}}
-              accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.txt,.js,.ts,.jsx,.tsx,.py,.html,.css,.json,.md,.csv"
+              accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.txt,.js,.ts,.jsx,.tsx,.py,.html,.css,.json,.md,.csv,.zip"
               onChange={handleFilePick}/>
             <button onClick={()=>fileRef.current?.click()} style={s.toolBtn} title="Anexar arquivo">📎</button>
             <button onClick={()=>setShowUrlBox(!showUrlBox)}
