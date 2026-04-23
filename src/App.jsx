@@ -146,15 +146,15 @@ const HEADERS = (key) => ({
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 // Chamada normal com retry automático (web search / tools)
-async function callNormal(apiKey, messages, useWebSearch) {
+async function callNormal(apiKey, messages, useWebSearch, modelId, signal) {
   let cur = [...messages];
   for (let i = 0; i < 6; i++) {
-    const body = { model: "claude-sonnet-4-20250514", max_tokens: 4096, system: SYSTEM_PROMPT, messages: cur };
+    const body = { model: modelId||"claude-sonnet-4-20250514", max_tokens: 4096, system: SYSTEM_PROMPT, messages: cur };
     if (useWebSearch) body.tools = [{ type: "web_search_20250305", name: "web_search" }];
 
     let res, data;
     for (let attempt = 0; attempt < 4; attempt++) {
-      res  = await fetch("https://api.anthropic.com/v1/messages", { method:"POST", headers: HEADERS(apiKey), body: JSON.stringify(body) });
+      res  = await fetch("https://api.anthropic.com/v1/messages", { method:"POST", headers: HEADERS(apiKey), body: JSON.stringify(body), signal });
       data = await res.json();
       if (res.status === 529 || data.error?.type === "overloaded_error") {
         const wait = (attempt + 1) * 8000; // 8s, 16s, 24s
@@ -178,9 +178,9 @@ async function callNormal(apiKey, messages, useWebSearch) {
 }
 
 // Streaming com retry automático (sem tools)
-async function callStream(apiKey, messages, onChunk, onRetry) {
+async function callStream(apiKey, messages, onChunk, onRetry, modelId, signal) {
   const body = {
-    model: "claude-sonnet-4-20250514",
+    model: modelId||"claude-sonnet-4-20250514",
     max_tokens: 4096,
     system: SYSTEM_PROMPT,
     messages,
@@ -188,7 +188,7 @@ async function callStream(apiKey, messages, onChunk, onRetry) {
   };
 
   for (let attempt = 0; attempt < 4; attempt++) {
-    const res = await fetch("https://api.anthropic.com/v1/messages", { method:"POST", headers: HEADERS(apiKey), body: JSON.stringify(body) });
+    const res = await fetch("https://api.anthropic.com/v1/messages", { method:"POST", headers: HEADERS(apiKey), body: JSON.stringify(body), signal });
 
     if (res.status === 529) {
       const wait = (attempt + 1) * 8000;
@@ -266,10 +266,14 @@ export default function App() {
   const [error, setError]               = useState("");
   const [sidebarOpen, setSidebarOpen]   = useState(true);
   const [webSearch, setWebSearch]       = useState(true);
-  const bottomRef  = useRef(null);
-  const lastMsgRef = useRef(null); // aponta pro INÍCIO da última resposta
-  const fileRef    = useRef(null);
-  const urlRef     = useRef(null);
+  const [model, setModel]               = useState(ls.get("codeagent:model") || "claude-sonnet-4-20250514");
+  const [savedPrompts, setSavedPrompts] = useState(() => ls.get("codeagent:prompts") || []);
+  const [showPrompts, setShowPrompts]   = useState(false);
+  const bottomRef   = useRef(null);
+  const lastMsgRef  = useRef(null);
+  const abortRef    = useRef(null);
+  const fileRef     = useRef(null);
+  const urlRef      = useRef(null);
 
   // Durante loading/streaming: acompanha o fim pra ver o indicador
   useEffect(() => {
@@ -294,6 +298,43 @@ export default function App() {
       if (rememberKey) ls.set(KEY_STORE, apiKey.trim()); else ls.del(KEY_STORE);
       setApiKeySet(true); setKeyError("");
     } else setKeyError("Chave inválida. Deve começar com sk-ant-");
+  };
+
+  const stopGeneration = () => {
+    if (abortRef.current) { abortRef.current.abort(); abortRef.current = null; }
+    setLoading(false); setSearching(false); setStreamText("");
+  };
+
+  const changeModel = (m) => { setModel(m); ls.set("codeagent:model", m); };
+
+  const saveCurrentPrompt = () => {
+    const txt = input.trim(); if (!txt) return;
+    if (savedPrompts.find(p => p.text === txt)) return;
+    const updated = [{ id: genId(), text: txt, label: txt.slice(0,30) }, ...savedPrompts].slice(0,10);
+    setSavedPrompts(updated); ls.set("codeagent:prompts", updated);
+  };
+
+  const deletePrompt = (id) => {
+    const updated = savedPrompts.filter(p => p.id !== id);
+    setSavedPrompts(updated); ls.set("codeagent:prompts", updated);
+  };
+
+  const exportChat = () => {
+    if (!uiMessages.length) return;
+    const lines = uiMessages.map(m =>
+      (m.role==="user" ? "**Você:**" : "**Agente:**") + "
+
+" + m.content
+    ).join("
+
+---
+
+");
+    const blob = new Blob([lines], { type:"text/markdown" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "conversa-" + new Date().toISOString().slice(0,10) + ".md";
+    a.click();
   };
 
   const handleLogout = () => { ls.del(KEY_STORE); setApiKey(""); setApiKeySet(false); setMessages([]); setUiMessages([]); setActiveChatId(null); };
@@ -380,18 +421,22 @@ export default function App() {
       setChatsIndex(ni); ls.set(CHATS_KEY, ni);
     }
 
+    abortRef.current = new AbortController();
+    const sig = abortRef.current.signal;
+
     try {
       let finalText = "";
 
       if (webSearch) {
         setSearching(true);
-        finalText = await callNormal(apiKey, newApi, true);
+        finalText = await callNormal(apiKey, newApi, true, model, sig);
         setSearching(false);
       } else {
         finalText = await callStream(
           apiKey, newApi,
           (chunk) => setStreamText(chunk),
-          (attempt, secs) => setStreamText(`⏳ Servidores ocupados, tentando novamente em ${secs}s… (tentativa ${attempt}/3)`)
+          (attempt, secs) => setStreamText(`⏳ Servidores ocupados, tentando novamente em ${secs}s… (tentativa ${attempt}/3)`),
+          model, sig
         );
         setStreamText("");
       }
@@ -409,9 +454,9 @@ export default function App() {
 
     } catch(err) {
       setStreamText(""); setSearching(false);
-      setError("Erro: "+err.message);
+      if (err.name !== "AbortError") setError("Erro: "+err.message);
     } finally {
-      setLoading(false);
+      setLoading(false); abortRef.current = null;
     }
   };
 
@@ -455,12 +500,28 @@ export default function App() {
               <span style={s.sidebarBrand}>Code Agent</span>
             </div>
             <button onClick={startNewChat} style={s.newChatBtn}>+ Novo Chat</button>
+            {/* Model selector */}
+            <div style={s.modelRow}>
+              <span style={s.toggleLabel}>🤖 Modelo</span>
+              <div style={s.modelBtns}>
+                <button onClick={()=>changeModel("claude-haiku-4-5-20251001")}
+                  style={{...s.modelBtn, background:model.includes("haiku")?"#cc785c":"#1e1e1c", color:model.includes("haiku")?"#fff":"#6b6762"}}>
+                  Haiku 💰
+                </button>
+                <button onClick={()=>changeModel("claude-sonnet-4-20250514")}
+                  style={{...s.modelBtn, background:model.includes("sonnet")?"#cc785c":"#1e1e1c", color:model.includes("sonnet")?"#fff":"#6b6762"}}>
+                  Sonnet 🧠
+                </button>
+              </div>
+            </div>
+
             <div style={s.toggleRow}>
               <span style={s.toggleLabel}>🔍 Busca na Web</span>
               <div onClick={()=>setWebSearch(!webSearch)} style={{...s.toggle, background:webSearch?"#cc785c":"#2c2c2a"}}>
                 <div style={{...s.toggleKnob, transform:webSearch?"translateX(16px)":"translateX(0)"}}/>
               </div>
             </div>
+            <button onClick={exportChat} style={s.exportBtn}>📥 Exportar conversa</button>
             <div style={s.featuresBox}>
               {[["📄","Upload PDF"],["🖼️","Upload Imagem"],["📝","Upload Código"],["🗜️","Upload ZIP"],["🔗","Leitor de URL"],["💾","Histórico"],["⚡","Streaming"]].map(([i,l])=>(
                 <div key={l} style={s.featRow}><span>{i}</span><span>{l}</span><span style={s.featOk}>✓</span></div>
@@ -575,12 +636,43 @@ export default function App() {
             </div>
           )}
 
+          {/* Prompts panel */}
+          {showPrompts && (
+            <div style={s.promptsPanel}>
+              <div style={s.promptsPanelHeader}>
+                <span style={{fontSize:13,fontWeight:600,color:"#e8e3dc"}}>📌 Prompts Salvos</span>
+                <button onClick={saveCurrentPrompt} disabled={!input.trim()}
+                  style={{...s.urlBtn,padding:"4px 12px",fontSize:12,opacity:input.trim()?1:0.4}}>
+                  + Salvar atual
+                </button>
+              </div>
+              {savedPrompts.length===0
+                ? <div style={{fontSize:12,color:"#4a4845",padding:"10px 0",textAlign:"center"}}>
+                    Nenhum prompt salvo.<br/>Digite algo e clique em "+ Salvar atual".
+                  </div>
+                : savedPrompts.map(p=>(
+                  <div key={p.id} style={s.promptItem}>
+                    <span style={s.promptText} onClick={()=>{setInput(p.text);setShowPrompts(false);}}>
+                      {p.text}
+                    </span>
+                    <button onClick={()=>deletePrompt(p.id)} style={s.promptDel}>×</button>
+                  </div>
+                ))
+              }
+            </div>
+          )}
+
           {/* Input bar */}
           <div style={s.inputArea}>
             <input ref={fileRef} type="file" style={{display:"none"}}
               accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.txt,.js,.ts,.jsx,.tsx,.py,.html,.css,.json,.md,.csv,.zip"
               onChange={handleFilePick}/>
-            <button onClick={()=>fileRef.current?.click()} style={s.toolBtn} title="Anexar arquivo">📎</button>
+            {loading
+              ? <button onClick={stopGeneration} style={s.stopBtn} title="Parar resposta">⏹</button>
+              : <button onClick={()=>fileRef.current?.click()} style={s.toolBtn} title="Anexar arquivo">📎</button>
+            }
+            <button onClick={()=>setShowPrompts(!showPrompts)}
+              style={{...s.toolBtn, borderColor:showPrompts?"#cc785c":"#2c2c2a"}} title="Prompts salvos">📌</button>
             <button onClick={()=>setShowUrlBox(!showUrlBox)}
               style={{...s.toolBtn, background:showUrlBox?"#252320":"#1e1e1c", borderColor:showUrlBox?"#cc785c":"#2c2c2a"}}
               title="Link de referência">🔗</button>
@@ -673,6 +765,24 @@ const s = {
   confirmBtn:{width:"100%",background:"#cc785c",border:"none",borderRadius:9,padding:13,fontWeight:600,fontSize:15,color:"#fff",cursor:"pointer",fontFamily:FONT},
   errBox:{background:"#2a1414",border:"1px solid #7f3535",borderRadius:9,padding:"11px 16px",fontSize:13,color:"#f08080",lineHeight:1.5},
   link:{fontSize:13,color:"#cc785c",textDecoration:"none"},
+
+  // Model selector
+  modelRow:{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 16px",borderBottom:"1px solid #1e1e1c"},
+  modelBtns:{display:"flex",gap:4},
+  modelBtn:{border:"none",borderRadius:6,padding:"4px 10px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:FONT,transition:"all .15s"},
+
+  // Export button
+  exportBtn:{margin:"6px 12px 2px",background:"transparent",border:"1px solid #2c2c2a",borderRadius:8,padding:"7px 14px",fontSize:12,color:"#8c8984",cursor:"pointer",fontFamily:FONT,textAlign:"left",transition:"all .15s"},
+
+  // Stop button
+  stopBtn:{width:42,height:42,flexShrink:0,background:"#7f3535",border:"none",borderRadius:10,fontSize:18,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",color:"#fff"},
+
+  // Prompts panel
+  promptsPanel:{padding:"12px 16px",background:"#161614",borderTop:"1px solid #2c2c2a",flexShrink:0,maxHeight:200,overflowY:"auto"},
+  promptsPanelHeader:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10},
+  promptItem:{display:"flex",alignItems:"center",gap:8,padding:"7px 10px",background:"#1e1e1c",borderRadius:8,marginBottom:6,cursor:"pointer",border:"1px solid #2c2c2a"},
+  promptText:{flex:1,fontSize:13,color:"#b8b2ac",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"},
+  promptDel:{background:"transparent",border:"none",color:"#6b6762",cursor:"pointer",fontSize:16,padding:"0 2px",flexShrink:0},
 };
 
 const css = `
