@@ -235,11 +235,27 @@ export default function App() {
   const [error, setError]               = useState("");
   const [sidebarOpen, setSidebarOpen]   = useState(true);
   const [webSearch, setWebSearch]       = useState(true);
-  const bottomRef = useRef(null);
-  const fileRef   = useRef(null);
-  const urlRef    = useRef(null);
+  const bottomRef  = useRef(null);
+  const lastMsgRef = useRef(null); // aponta pro INÍCIO da última resposta
+  const fileRef    = useRef(null);
+  const urlRef     = useRef(null);
 
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior:"smooth" }); }, [uiMessages, streamText, loading]);
+  // Durante loading/streaming: acompanha o fim pra ver o indicador
+  useEffect(() => {
+    if (loading) bottomRef.current?.scrollIntoView({ behavior:"smooth" });
+  }, [streamText, loading]);
+
+  // Quando resposta chega: vai pro INÍCIO da mensagem do agente
+  useEffect(() => {
+    if (!loading && uiMessages.length > 0) {
+      const last = uiMessages[uiMessages.length - 1];
+      if (last?.role === "assistant") {
+        setTimeout(() => lastMsgRef.current?.scrollIntoView({ behavior:"smooth", block:"start" }), 50);
+      } else {
+        bottomRef.current?.scrollIntoView({ behavior:"smooth" });
+      }
+    }
+  }, [uiMessages]);
   useEffect(() => { if (showUrlBox) urlRef.current?.focus(); }, [showUrlBox]);
 
   const handleSetKey = () => {
@@ -467,7 +483,7 @@ export default function App() {
             )}
 
             {uiMessages.map((msg,i)=>(
-              <div key={i} style={{...s.msgRow, flexDirection:msg.role==="user"?"row-reverse":"row"}}>
+              <div key={i} ref={msg.role==="assistant" && i===uiMessages.length-1 ? lastMsgRef : null} style={{...s.msgRow, flexDirection:msg.role==="user"?"row-reverse":"row"}}>
                 {msg.role==="assistant"&&<div style={s.avatar}>CA</div>}
                 <div style={msg.role==="user"?s.userBubble:s.agentBubble}>
                   {msg.attachment&&(
@@ -655,6 +671,5 @@ body{margin:0;padding:0}
 .dot{width:8px;height:8px;background:#cc785c;border-radius:50%;display:inline-block;animation:blink 1.3s infinite}
 .dot:nth-child(2){animation-delay:.22s;background:#d4a574}
 .dot:nth-child(3){animation-delay:.44s;background:#cc785c}
-
 @keyframes pulse{0%,100%{opacity:.3;transform:scale(.8)}50%{opacity:1;transform:scale(1.1)}}
 `;
