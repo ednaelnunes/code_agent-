@@ -655,5 +655,6 @@ body{margin:0;padding:0}
 .dot{width:8px;height:8px;background:#cc785c;border-radius:50%;display:inline-block;animation:blink 1.3s infinite}
 .dot:nth-child(2){animation-delay:.22s;background:#d4a574}
 .dot:nth-child(3){animation-delay:.44s;background:#cc785c}
+
 @keyframes pulse{0%,100%{opacity:.3;transform:scale(.8)}50%{opacity:1;transform:scale(1.1)}}
 `;
