@@ -274,7 +274,6 @@ export default function App() {
   const [showSkillMenu, setShowSkillMenu] = useState(false);
   const [showSkillUpload, setShowSkillUpload] = useState(false);
   const [skillScopeTemp, setSkillScopeTemp] = useState(null); // skill aguardando escolha de escopo
-  const skillFileRef = useRef(null);
   const bottomRef   = useRef(null);
   const lastMsgRef  = useRef(null);
   const abortRef    = useRef(null);
@@ -320,8 +319,7 @@ export default function App() {
       if (entries.length === 0) { alert("Nenhum arquivo .txt, .md ou .json encontrado no ZIP."); return; }
       let content = "";
       for (const entry of entries.slice(0,5)) {
-        try { content += await entry.async("string") + "
-"; } catch { continue; }
+        try { content += await entry.async("string") + "\n"; } catch { continue; }
       }
       const newSkill = {
         id: genId(),
