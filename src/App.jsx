@@ -269,11 +269,18 @@ export default function App() {
   const [model, setModel]               = useState(ls.get("codeagent:model") || "claude-sonnet-4-20250514");
   const [savedPrompts, setSavedPrompts] = useState(() => ls.get("codeagent:prompts") || []);
   const [showPrompts, setShowPrompts]   = useState(false);
+  const [skills, setSkills]             = useState(() => ls.get("codeagent:skills") || []);
+  const [activeSkill, setActiveSkill]   = useState(null);  // skill ativa agora
+  const [showSkillMenu, setShowSkillMenu] = useState(false);
+  const [showSkillUpload, setShowSkillUpload] = useState(false);
+  const [skillScopeTemp, setSkillScopeTemp] = useState(null); // skill aguardando escolha de escopo
+  const skillFileRef = useRef(null);
   const bottomRef   = useRef(null);
   const lastMsgRef  = useRef(null);
   const abortRef    = useRef(null);
   const fileRef     = useRef(null);
   const urlRef      = useRef(null);
+  const skillFileRef = useRef(null);
 
   // Durante loading/streaming: acompanha o fim pra ver o indicador
   useEffect(() => {
@@ -300,6 +307,58 @@ export default function App() {
     } else setKeyError("Chave inválida. Deve começar com sk-ant-");
   };
 
+  // ── Skill handlers ──────────────────────────────────────────
+  const handleSkillUpload = async (e) => {
+    const file = e.target.files?.[0]; if (!file) return; e.target.value="";
+    if (!file.name.endsWith(".zip")) { alert("Por favor envie um arquivo .zip"); return; }
+    if (file.size > 5*1024*1024) { alert("Arquivo muito grande. Limite: 5 MB."); return; }
+    try {
+      const JSZip = (await import("jszip")).default;
+      const zip = await JSZip.loadAsync(file);
+      const TEXT_EXT = /\.(txt|md|json)$/i;
+      const entries = Object.values(zip.files).filter(f => !f.dir && TEXT_EXT.test(f.name));
+      if (entries.length === 0) { alert("Nenhum arquivo .txt, .md ou .json encontrado no ZIP."); return; }
+      let content = "";
+      for (const entry of entries.slice(0,5)) {
+        try { content += await entry.async("string") + "
+"; } catch { continue; }
+      }
+      const newSkill = {
+        id: genId(),
+        name: file.name.replace(".zip",""),
+        content: content.slice(0, 8000),
+        createdAt: Date.now(),
+      };
+      setSkillScopeTemp(newSkill);
+      setShowSkillUpload(true);
+    } catch(err) { alert("Erro ao ler ZIP: "+err.message); }
+  };
+
+  const confirmSkillScope = (permanent) => {
+    if (!skillScopeTemp) return;
+    if (permanent) {
+      const updated = [skillScopeTemp, ...skills].slice(0,10);
+      setSkills(updated); ls.set("codeagent:skills", updated);
+    }
+    setActiveSkill(skillScopeTemp);
+    setSkillScopeTemp(null); setShowSkillUpload(false); setShowSkillMenu(false);
+  };
+
+  const activateSkill = (skill) => { setActiveSkill(skill); setShowSkillMenu(false); };
+  const deactivateSkill = () => { setActiveSkill(null); };
+  const deleteSkill = (id) => {
+    const updated = skills.filter(s=>s.id!==id);
+    setSkills(updated); ls.set("codeagent:skills", updated);
+    if (activeSkill?.id===id) setActiveSkill(null);
+  };
+
+  // Detecta "/" no início da mensagem para abrir menu de skills
+  const handleInputChange = (e) => {
+    const val = e.target.value;
+    setInput(val);
+    if (val === "/") { setShowSkillMenu(true); setInput(""); }
+  };
+
   const stopGeneration = () => {
     if (abortRef.current) { abortRef.current.abort(); abortRef.current = null; }
     setLoading(false); setSearching(false); setStreamText("");
@@ -321,19 +380,14 @@ export default function App() {
 
   const exportChat = () => {
     if (!uiMessages.length) return;
+    const sep = "\n\n---\n\n";
     const lines = uiMessages.map(m =>
-      (m.role==="user" ? "**Você:**" : "**Agente:**") + "
-
-" + m.content
-    ).join("
-
----
-
-");
-    const blob = new Blob([lines], { type:"text/markdown" });
+      (m.role === "user" ? "**Você:**" : "**Agente:**") + "\n\n" + m.content
+    ).join(sep);
+    const blob = new Blob([lines], { type: "text/markdown" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = "conversa-" + new Date().toISOString().slice(0,10) + ".md";
+    a.download = "conversa-" + new Date().toISOString().slice(0, 10) + ".md";
     a.click();
   };
 
@@ -424,16 +478,28 @@ export default function App() {
     abortRef.current = new AbortController();
     const sig = abortRef.current.signal;
 
+    // Inject active skill into messages as system context
+    let apiMessages = newApi;
+    if (activeSkill) {
+      const skillCtx = { role:"user", content:`[SKILL ATIVA: ${activeSkill.name}]
+
+${activeSkill.content}
+
+Aplique as instruções acima nesta e em todas as próximas respostas desta conversa.` };
+      const skillAck = { role:"assistant", content:`Entendido! Vou aplicar a skill "${activeSkill.name}" agora.` };
+      apiMessages = [skillCtx, skillAck, ...newApi];
+    }
+
     try {
       let finalText = "";
 
       if (webSearch) {
         setSearching(true);
-        finalText = await callNormal(apiKey, newApi, true, model, sig);
+        finalText = await callNormal(apiKey, apiMessages, true, model, sig);
         setSearching(false);
       } else {
         finalText = await callStream(
-          apiKey, newApi,
+          apiKey, apiMessages,
           (chunk) => setStreamText(chunk),
           (attempt, secs) => setStreamText(`⏳ Servidores ocupados, tentando novamente em ${secs}s… (tentativa ${attempt}/3)`),
           model, sig
@@ -460,7 +526,7 @@ export default function App() {
     }
   };
 
-  const onKey    = (e) => { if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();handleSend();} };
+  const onKey    = (e) => { if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();handleSend();} if(e.key==="Escape"){setShowSkillMenu(false);} };
   const onUrlKey = (e) => { if(e.key==="Enter") handleFetchUrl(); if(e.key==="Escape") setShowUrlBox(false); };
 
   // ── API Key Screen ──
@@ -551,6 +617,7 @@ export default function App() {
             <span style={s.headerTitle}>{activeChatId ? chatsIndex.find(c=>c.id===activeChatId)?.title||"Chat" : "Novo Chat"}</span>
             <div style={s.badges}>
               {webSearch ? <div style={s.badge}>🔍 Web On</div> : <div style={{...s.badge, color:"#6b6762", borderColor:"#2c2c2a"}}>🔍 Web Off</div>}
+              {activeSkill && <div style={{...s.badge, color:"#4caf78", borderColor:"#4caf7844"}}>🧠 {activeSkill.name}</div>}
               <div style={s.statusDot}/>
             </div>
           </div>
@@ -636,6 +703,74 @@ export default function App() {
             </div>
           )}
 
+          {/* Skill scope modal */}
+          {showSkillUpload && skillScopeTemp && (
+            <div style={s.skillModal}>
+              <div style={s.skillModalBox}>
+                <div style={s.skillModalIcon}>🧠</div>
+                <div style={{fontSize:14,fontWeight:600,color:"#e8e3dc",marginBottom:6}}>Skill carregada!</div>
+                <div style={{fontSize:13,color:"#8c8984",marginBottom:16,textAlign:"center"}}>
+                  <strong style={{color:"#cc785c"}}>{skillScopeTemp.name}</strong><br/>
+                  Como você quer salvar essa skill?
+                </div>
+                <button onClick={()=>confirmSkillScope(true)} style={{...s.urlBtn,width:"100%",marginBottom:8,padding:10}}>
+                  💾 Salvar permanentemente
+                </button>
+                <button onClick={()=>confirmSkillScope(false)} style={{...s.urlBtn,width:"100%",marginBottom:8,padding:10,background:"#2a2826",color:"#b8b2ac"}}>
+                  ⚡ Usar só nesta sessão
+                </button>
+                <button onClick={()=>{setShowSkillUpload(false);setSkillScopeTemp(null);}} style={{background:"transparent",border:"none",color:"#6b6762",cursor:"pointer",fontSize:12,fontFamily:FONT}}>
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Skill menu panel */}
+          {showSkillMenu && (
+            <div style={s.skillPanel}>
+              <div style={s.skillPanelHeader}>
+                <span style={{fontSize:13,fontWeight:600,color:"#e8e3dc"}}>🧠 Skills</span>
+                <button onClick={()=>skillFileRef.current?.click()} style={{...s.urlBtn,padding:"4px 12px",fontSize:12}}>
+                  + Upload ZIP
+                </button>
+              </div>
+
+              {/* Skill ativa */}
+              {activeSkill && (
+                <div style={s.activeSkillRow}>
+                  <span style={{fontSize:11,color:"#4caf78"}}>● ATIVA</span>
+                  <span style={s.skillName}>{activeSkill.name}</span>
+                  <button onClick={deactivateSkill} style={s.skillDeactivate}>Desativar</button>
+                </div>
+              )}
+
+              {/* Lista de skills salvas */}
+              {skills.length === 0 && !activeSkill && (
+                <div style={{fontSize:12,color:"#4a4845",textAlign:"center",padding:"16px 0"}}>
+                  Nenhuma skill salva.<br/>Faça upload de um .zip com as instruções.
+                </div>
+              )}
+              {skills.map(skill=>(
+                <div key={skill.id} style={{...s.skillItem, background:activeSkill?.id===skill.id?"#252320":"#1e1e1c", borderColor:activeSkill?.id===skill.id?"#cc785c":"#2c2c2a"}}>
+                  <span style={{fontSize:16}}>🧠</span>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={s.skillName}>{skill.name}</div>
+                    <div style={{fontSize:10,color:"#4a4845"}}>{new Date(skill.createdAt).toLocaleDateString("pt-BR")}</div>
+                  </div>
+                  <button onClick={()=>activateSkill(skill)} style={{...s.urlBtn,padding:"3px 10px",fontSize:11}}>
+                    {activeSkill?.id===skill.id?"✓":"Ativar"}
+                  </button>
+                  <button onClick={()=>deleteSkill(skill.id)} style={s.promptDel}>×</button>
+                </div>
+              ))}
+
+              <div style={{fontSize:11,color:"#4a4845",marginTop:8,textAlign:"center"}}>
+                Dica: digite <strong style={{color:"#cc785c"}}>/</strong> no chat para abrir este menu
+              </div>
+            </div>
+          )}
+
           {/* Prompts panel */}
           {showPrompts && (
             <div style={s.promptsPanel}>
@@ -667,17 +802,24 @@ export default function App() {
             <input ref={fileRef} type="file" style={{display:"none"}}
               accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.txt,.js,.ts,.jsx,.tsx,.py,.html,.css,.json,.md,.csv,.zip"
               onChange={handleFilePick}/>
+            <input ref={skillFileRef} type="file" style={{display:"none"}}
+              accept=".zip" onChange={handleSkillUpload}/>
             {loading
               ? <button onClick={stopGeneration} style={s.stopBtn} title="Parar resposta">⏹</button>
               : <button onClick={()=>fileRef.current?.click()} style={s.toolBtn} title="Anexar arquivo">📎</button>
             }
             <button onClick={()=>setShowPrompts(!showPrompts)}
               style={{...s.toolBtn, borderColor:showPrompts?"#cc785c":"#2c2c2a"}} title="Prompts salvos">📌</button>
+            <button onClick={()=>setShowSkillMenu(!showSkillMenu)}
+              style={{...s.toolBtn, borderColor:activeSkill?"#cc785c":"#2c2c2a", position:"relative"}} title="Skills (ou digite /)">
+              🧠
+              {activeSkill && <span style={{position:"absolute",top:4,right:4,width:7,height:7,borderRadius:"50%",background:"#4caf78"}}/>}
+            </button>
             <button onClick={()=>setShowUrlBox(!showUrlBox)}
               style={{...s.toolBtn, background:showUrlBox?"#252320":"#1e1e1c", borderColor:showUrlBox?"#cc785c":"#2c2c2a"}}
               title="Link de referência">🔗</button>
-            <textarea value={input} onChange={e=>setInput(e.target.value)} onKeyDown={onKey} rows={3} style={s.textarea}
-              placeholder={attachment?.kind==="url" ? `Instrução para "${attachment.name}"…` : "Me diga o que precisa… (Enter envia, Shift+Enter quebra linha)"}/>
+            <textarea value={input} onChange={handleInputChange} onKeyDown={onKey} rows={3} style={s.textarea}
+              placeholder={attachment?.kind==="url" ? `Instrução para "${attachment.name}"…` : "Me diga o que precisa… (Enter envia · / para skills)"}/>
             <button onClick={handleSend} disabled={loading||(!input.trim()&&!attachment)}
               style={{...s.sendBtn, opacity:loading||(!input.trim()&&!attachment)?0.4:1}}>
               {loading?"…":"→"}
